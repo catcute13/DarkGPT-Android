@@ -4,6 +4,9 @@ package com.darkgpt.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.content.Context
@@ -30,6 +33,9 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -54,13 +60,30 @@ class MainActivity : Activity() {
     private lateinit var chatScroll: ScrollView
     private lateinit var prompt: EditText
     private lateinit var sendButton: Button
+    private lateinit var clockView: TextView
+
+    private val clockHandler = Handler(Looper.getMainLooper())
+    private val clockRunnable = object : Runnable {
+        override fun run() {
+            if (::clockView.isInitialized) {
+                clockView.text = SimpleDateFormat(
+                    "HH:mm:ss  •  dd/MM/yyyy",
+                    Locale.getDefault()
+                ).format(Date())
+            }
+            clockHandler.postDelayed(this, 1000)
+        }
+    }
 
     private var sending = false
     private var currentChatId = ""
     private var attachedText = ""
+    private val attachedFileNames = mutableListOf<String>()
+
     private var pendingImageBase64: String? = null
     private var pendingImageMime = "image/jpeg"
     private var pendingImageName = ""
+    private var pendingImageBytes: ByteArray? = null
     private var pendingZipFiles: List<Pair<String, String>> = emptyList()
 
     data class Message(
@@ -78,23 +101,19 @@ class MainActivity : Activity() {
     private val chats = mutableListOf<Chat>()
 
     private fun language(): String {
-        val saved = prefs.getString("language", null)
-        if (saved == "vi" || saved == "en" || saved == "ru") {
-            return saved
-        }
-
-        return when (resources.configuration.locales[0].language) {
+        return when (prefs.getString("language", null)) {
             "vi" -> "vi"
+            "en" -> "en"
             "ru" -> "ru"
-            else -> "en"
+            else -> when (resources.configuration.locales[0].language) {
+                "vi" -> "vi"
+                "ru" -> "ru"
+                else -> "en"
+            }
         }
     }
 
-    private fun tr(
-        vi: String,
-        en: String,
-        ru: String
-    ): String {
+    private fun tr(vi: String, en: String, ru: String): String {
         return when (language()) {
             "en" -> en
             "ru" -> ru
@@ -115,9 +134,7 @@ class MainActivity : Activity() {
 
         loadChats()
 
-        if (chats.isEmpty()) {
-            createChat(false)
-        }
+        if (chats.isEmpty()) createChat(false)
 
         if (chats.none { it.id == currentChatId }) {
             currentChatId = chats.first().id
@@ -126,11 +143,13 @@ class MainActivity : Activity() {
         showMain()
     }
 
-    private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density + 0.5f
-        ).toInt()
+    override fun onDestroy() {
+        clockHandler.removeCallbacks(clockRunnable)
+        super.onDestroy()
     }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun textView(
         value: String,
@@ -155,12 +174,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun currentChat(): Chat? {
-        return chats.firstOrNull { it.id == currentChatId }
-    }
+    private fun currentChat(): Chat? =
+        chats.firstOrNull { it.id == currentChatId }
 
     // -----------------------------
-    // LỊCH SỬ CHAT
+    // CHAT HISTORY
     // -----------------------------
 
     private fun loadChats() {
@@ -179,7 +197,6 @@ class MainActivity : Activity() {
 
                 for (j in 0 until messageArray.length()) {
                     val message = messageArray.getJSONObject(j)
-
                     messages.add(
                         Message(
                             message.optString("role"),
@@ -206,7 +223,6 @@ class MainActivity : Activity() {
 
             currentChatId =
                 prefs.getString("current_chat", "") ?: ""
-
         } catch (_: Exception) {
             chats.clear()
         }
@@ -261,10 +277,12 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------
-    // GIAO DIỆN CHAT
+    // MAIN UI
     // -----------------------------
 
     private fun showMain() {
+        clockHandler.removeCallbacks(clockRunnable)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -272,11 +290,27 @@ class MainActivity : Activity() {
             fitsSystemWindows = true
         }
 
-        root.addView(
+        // Title and creator share the same row.
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        titleRow.addView(
             textView("DarkGPT", 27f, white).apply {
+                typeface = Typeface.DEFAULT_BOLD
+            },
+            LinearLayout.LayoutParams(0, -2, 1f)
+        )
+
+        titleRow.addView(
+            textView("Creater : Tú-LNMT", 12f, green).apply {
+                gravity = Gravity.END
                 typeface = Typeface.DEFAULT_BOLD
             }
         )
+
+        root.addView(titleRow)
 
         root.addView(
             textView(
@@ -290,6 +324,10 @@ class MainActivity : Activity() {
             )
         )
 
+        clockView = textView("", 12f, muted)
+        root.addView(clockView)
+        clockHandler.post(clockRunnable)
+
         val topRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -297,25 +335,19 @@ class MainActivity : Activity() {
         topRow.addView(
             makeButton(
                 tr("＋ Chat mới", "＋ New chat", "＋ Новый чат")
-            ) {
-                createChat()
-            }
+            ) { createChat() }
         )
 
         topRow.addView(
             makeButton(
                 tr("☰ Lịch sử", "☰ History", "☰ История")
-            ) {
-                showHistory()
-            }
+            ) { showHistory() }
         )
 
         topRow.addView(
             makeButton(
                 tr("⚙ Cài đặt", "⚙ Settings", "⚙ Настройки")
-            ) {
-                showSettings()
-            }
+            ) { showSettings() }
         )
 
         root.addView(topRow)
@@ -327,47 +359,105 @@ class MainActivity : Activity() {
         fileRow.addView(
             makeButton(
                 tr("📎 Chọn tệp", "📎 Attach file", "📎 Файл")
-            ) {
-                chooseFile()
-            }
+            ) { chooseFile() }
         )
 
         fileRow.addView(
             makeButton(
                 tr("🖼 Chọn ảnh", "🖼 Choose image", "🖼 Изображение")
-            ) {
-                chooseImage()
-            }
+            ) { chooseImage() }
         )
 
         fileRow.addView(
             makeButton(
                 tr("Tạo ZIP code", "Export code ZIP", "ZIP с кодом")
-            ) {
-                exportZip()
-            }
+            ) { exportZip() }
         )
 
         root.addView(fileRow)
 
-        val attachmentInfo = textView("", 12f, green)
-        attachmentInfo.text = buildString {
-            if (pendingImageBase64 != null) {
-                append("🖼 $pendingImageName  ")
+        // Attachment name and image preview.
+        if (attachedFileNames.isNotEmpty() ||
+            pendingImageBase64 != null
+        ) {
+            val attachmentBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                setBackgroundColor(panel)
             }
 
-            if (attachedText.isNotBlank()) {
-                append(
-                    tr(
-                        "Đã đính kèm tệp",
-                        "File attached",
-                        "Файл прикреплён"
+            if (attachedFileNames.isNotEmpty()) {
+                attachmentBox.addView(
+                    textView(
+                        tr("Tệp đã chọn:", "Attached files:", "Файлы:"),
+                        12f,
+                        green
                     )
                 )
-            }
-        }
 
-        root.addView(attachmentInfo)
+                attachedFileNames.forEach { name ->
+                    attachmentBox.addView(
+                        textView("📎 $name", 12f, white)
+                    )
+                }
+            }
+
+            if (pendingImageBase64 != null) {
+                attachmentBox.addView(
+                    textView("🖼 $pendingImageName", 12f, green)
+                )
+
+                val imageBytes = pendingImageBytes
+                if (imageBytes != null) {
+                    val bitmap = BitmapFactory.decodeByteArray(
+                        imageBytes, 0, imageBytes.size
+                    )
+
+                    if (bitmap != null) {
+                        attachmentBox.addView(
+                            ImageView(this).apply {
+                                setImageBitmap(bitmap)
+                                adjustViewBounds = true
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                maxHeight = dp(180)
+                            },
+                            LinearLayout.LayoutParams(-1, dp(180))
+                        )
+                    }
+                }
+
+                attachmentBox.addView(
+                    makeButton(
+                        tr("Bỏ ảnh", "Remove image", "Убрать изображение")
+                    ) {
+                        pendingImageBase64 = null
+                        pendingImageBytes = null
+                        pendingImageName = ""
+                        refreshMainPreservingDraft()
+                    }
+                )
+            }
+
+            attachmentBox.addView(
+                makeButton(
+                    tr("Xóa tệp đính kèm", "Clear attachments", "Удалить вложения")
+                ) {
+                    attachedText = ""
+                    attachedFileNames.clear()
+                    pendingImageBase64 = null
+                    pendingImageBytes = null
+                    pendingImageName = ""
+                    refreshMainPreservingDraft()
+                }
+            )
+
+            root.addView(
+                attachmentBox,
+                LinearLayout.LayoutParams(-1, -2).apply {
+                    bottomMargin = dp(5)
+                }
+            )
+        }
 
         chatList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -377,11 +467,7 @@ class MainActivity : Activity() {
         chatScroll = ScrollView(this).apply {
             isFillViewport = false
             clipToPadding = false
-
-            addView(
-                chatList,
-                ViewGroup.LayoutParams(-1, -2)
-            )
+            addView(chatList, ViewGroup.LayoutParams(-1, -2))
         }
 
         root.addView(
@@ -400,7 +486,6 @@ class MainActivity : Activity() {
                 "Type a request...",
                 "Введите запрос..."
             )
-
             setTextColor(white)
             setHintTextColor(muted)
             textSize = 15f
@@ -422,9 +507,7 @@ class MainActivity : Activity() {
 
         sendButton = makeButton(
             tr("Gửi", "Send", "Отправить")
-        ) {
-            sendPrompt()
-        }.apply {
+        ) { sendPrompt() }.apply {
             setBackgroundColor(purple)
             setTextColor(white)
         }
@@ -444,7 +527,6 @@ class MainActivity : Activity() {
 
     private fun renderCurrentChat() {
         chatList.removeAllViews()
-
         val chat = currentChat() ?: return
 
         if (chat.messages.isEmpty()) {
@@ -466,13 +548,11 @@ class MainActivity : Activity() {
             }
         }
 
-        chatScroll.post {
-            chatScroll.fullScroll(View.FOCUS_DOWN)
-        }
+        chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     // -----------------------------
-    // LỊCH SỬ, ĐỔI TÊN, ƯU TIÊN, XÓA
+    // HISTORY
     // -----------------------------
 
     private fun showHistory() {
@@ -487,17 +567,13 @@ class MainActivity : Activity() {
                 tr("Lịch sử chat", "Chat history", "История чатов"),
                 24f,
                 white
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-            }
+            ).apply { typeface = Typeface.DEFAULT_BOLD }
         )
 
         layout.addView(
             makeButton(
                 tr("＋ Chat mới", "＋ New chat", "＋ Новый чат")
-            ) {
-                createChat()
-            }
+            ) { createChat() }
         )
 
         val list = LinearLayout(this).apply {
@@ -559,7 +635,6 @@ class MainActivity : Activity() {
                         .setView(input)
                         .setPositiveButton("OK") { _, _ ->
                             val name = input.text.toString().trim()
-
                             if (name.isNotEmpty()) {
                                 chat.title = name
                                 saveChats()
@@ -567,8 +642,7 @@ class MainActivity : Activity() {
                             }
                         }
                         .setNegativeButton(
-                            tr("Hủy", "Cancel", "Отмена"),
-                            null
+                            tr("Hủy", "Cancel", "Отмена"), null
                         )
                         .show()
                 }
@@ -596,8 +670,7 @@ class MainActivity : Activity() {
                                 )
                             )
                             .setNegativeButton(
-                                tr("Hủy", "Cancel", "Отмена"),
-                                null
+                                tr("Hủy", "Cancel", "Отмена"), null
                             )
                             .setPositiveButton(
                                 tr("Xóa", "Delete", "Удалить")
@@ -618,7 +691,6 @@ class MainActivity : Activity() {
             )
 
             item.addView(actions)
-
             list.addView(
                 item,
                 LinearLayout.LayoutParams(-1, -2).apply {
@@ -627,22 +699,15 @@ class MainActivity : Activity() {
             )
         }
 
+        layout.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         layout.addView(
-            scroll,
-            LinearLayout.LayoutParams(-1, 0, 1f)
+            makeButton(tr("Quay lại", "Back", "Назад")) { showMain() }
         )
-
-        layout.addView(
-            makeButton(tr("Quay lại", "Back", "Назад")) {
-                showMain()
-            }
-        )
-
         setContentView(layout)
     }
 
     // -----------------------------
-    // CÀI ĐẶT API VÀ NGÔN NGỮ
+    // SETTINGS
     // -----------------------------
 
     private fun showSettings() {
@@ -657,9 +722,7 @@ class MainActivity : Activity() {
                 tr("Cài đặt", "Settings", "Настройки"),
                 25f,
                 white
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-            }
+            ).apply { typeface = Typeface.DEFAULT_BOLD }
         )
 
         layout.addView(
@@ -694,7 +757,6 @@ class MainActivity : Activity() {
                 setPadding(dp(12), dp(10), dp(12), dp(10))
                 setBackgroundColor(panel)
                 isSingleLine = true
-
                 inputType = if (secret) {
                     android.text.InputType.TYPE_CLASS_TEXT or
                         android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -705,17 +767,11 @@ class MainActivity : Activity() {
 
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(
-                        s: CharSequence?,
-                        start: Int,
-                        count: Int,
-                        after: Int
+                        s: CharSequence?, start: Int, count: Int, after: Int
                     ) {}
 
                     override fun onTextChanged(
-                        s: CharSequence?,
-                        start: Int,
-                        before: Int,
-                        count: Int
+                        s: CharSequence?, start: Int, before: Int, count: Int
                     ) {
                         prefs.edit()
                             .putString(keyName, s?.toString() ?: "")
@@ -726,11 +782,7 @@ class MainActivity : Activity() {
                 })
             }
 
-            layout.addView(
-                field,
-                LinearLayout.LayoutParams(-1, -2)
-            )
-
+            layout.addView(field, LinearLayout.LayoutParams(-1, -2))
             return field
         }
 
@@ -739,32 +791,18 @@ class MainActivity : Activity() {
             "https://api.example.com/v1",
             "base"
         )
-
-        val key = addField(
-            "API Key",
-            "API key",
-            "key",
-            true
-        )
-
-        val model = addField(
-            "Model",
-            "Model name",
-            "model"
-        )
+        val key = addField("API Key", "API key", "key", true)
+        val model = addField("Model", "Model name", "model")
 
         layout.addView(
             textView(
                 tr("Ngôn ngữ", "Language", "Язык"),
                 14f,
                 white
-            ).apply {
-                setPadding(0, dp(12), 0, dp(4))
-            }
+            ).apply { setPadding(0, dp(12), 0, dp(4)) }
         )
 
         val spinner = Spinner(this)
-
         spinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
@@ -783,9 +821,7 @@ class MainActivity : Activity() {
 
         spinner.onItemSelectedListener =
             object : AdapterView.OnItemSelectedListener {
-                override fun onNothingSelected(
-                    parent: AdapterView<*>?
-                ) {}
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
 
                 override fun onItemSelected(
                     parent: AdapterView<*>?,
@@ -892,15 +928,13 @@ class MainActivity : Activity() {
 
     private fun hideKeyboard() {
         currentFocus?.let {
-            (
-                getSystemService(INPUT_METHOD_SERVICE)
-                    as InputMethodManager
-            ).hideSoftInputFromWindow(it.windowToken, 0)
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(it.windowToken, 0)
         }
     }
 
     // -----------------------------
-    // CHỌN TỆP VÀ ẢNH
+    // PICK FILES AND IMAGES
     // -----------------------------
 
     private fun chooseFile() {
@@ -908,7 +942,6 @@ class MainActivity : Activity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
         }
-
         startActivityForResult(intent, 501)
     }
 
@@ -917,7 +950,6 @@ class MainActivity : Activity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "image/*"
         }
-
         startActivityForResult(intent, 503)
     }
 
@@ -928,15 +960,12 @@ class MainActivity : Activity() {
         data: Intent?
     ) {
         super.onActivityResult(requestCode, resultCode, data)
-
         if (resultCode != RESULT_OK || data?.data == null) return
 
-        val uri = data.data!!
-
         when (requestCode) {
-            501 -> readAttachment(uri)
-            502 -> writeZip(uri)
-            503 -> readImage(uri)
+            501 -> readAttachment(data.data!!)
+            502 -> writeZip(data.data!!)
+            503 -> readImage(data.data!!)
         }
     }
 
@@ -945,12 +974,16 @@ class MainActivity : Activity() {
             try {
                 val name = queryName(uri) ?: "attachment.txt"
                 val mime = contentResolver.getType(uri) ?: ""
-                val lower = name.lowercase()
+                val lower = name.lowercase(Locale.ROOT)
+
+                val isMinecraftArchive = listOf(
+                    ".zip", ".mcpack", ".mcaddon", ".mcworld", ".mctemplate"
+                ).any { lower.endsWith(it) }
 
                 val content = when {
                     lower.endsWith(".pdf") || mime == "application/pdf" -> {
                         val input = contentResolver.openInputStream(uri)
-                            ?: throw Exception("Không mở được PDF")
+                            ?: throw Exception("Cannot open PDF")
 
                         input.use {
                             val document = PDDocument.load(it)
@@ -962,7 +995,7 @@ class MainActivity : Activity() {
                         }
                     }
 
-                    lower.endsWith(".zip") ||
+                    isMinecraftArchive ||
                         mime == "application/zip" ||
                         mime == "application/x-zip-compressed" -> {
                         readZipText(uri)
@@ -973,28 +1006,32 @@ class MainActivity : Activity() {
                             ".kt", ".java", ".json", ".xml", ".md",
                             ".txt", ".gradle", ".kts", ".yml", ".yaml",
                             ".py", ".js", ".html", ".css", ".properties",
-                            ".toml", ".sh", ".c", ".cpp", ".h", ".hpp", ".sql"
+                            ".toml", ".sh", ".c", ".cpp", ".h", ".hpp",
+                            ".sql", ".mcfunction", ".lang", ".molang",
+                            ".mcmeta", ".ini", ".cfg", ".csv", ".log"
                         ).any { lower.endsWith(it) } -> {
                         contentResolver.openInputStream(uri)
                             ?.bufferedReader()
                             ?.use { it.readText() }
-                            ?: throw Exception("Không đọc được tệp")
+                            ?: throw Exception("Cannot read file")
                     }
 
                     else -> {
                         throw Exception(
-                            "Định dạng chưa hỗ trợ. " +
-                                "Hãy chọn tệp văn bản, code, PDF hoặc ZIP."
+                            "Unsupported format. Choose text, code, PDF, ZIP, " +
+                                "MCADDON, MCPACK or MCWORLD."
                         )
                     }
                 }
 
                 if (content.length > 120000) {
-                    throw Exception("Tệp vượt giới hạn 120.000 ký tự")
+                    throw Exception("File exceeds 120,000 characters")
                 }
 
-                attachedText +=
-                    "\n\n[FILE: $name]\n$content\n[END FILE]"
+                synchronized(attachedFileNames) {
+                    attachedFileNames.add(name)
+                    attachedText += "\n\n[FILE: $name]\n$content\n[END FILE]"
+                }
 
                 runOnUiThread {
                     Toast.makeText(
@@ -1006,14 +1043,13 @@ class MainActivity : Activity() {
                         ),
                         Toast.LENGTH_LONG
                     ).show()
-
                     refreshMainPreservingDraft()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     Toast.makeText(
                         this,
-                        "Lỗi đọc tệp: ${e.message}",
+                        "File error: ${e.message}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -1030,11 +1066,13 @@ class MainActivity : Activity() {
             ".kt", ".java", ".json", ".xml", ".md", ".txt",
             ".gradle", ".kts", ".yml", ".yaml", ".py", ".js",
             ".html", ".css", ".properties", ".toml", ".sh",
-            ".c", ".cpp", ".h", ".hpp", ".sql"
+            ".c", ".cpp", ".h", ".hpp", ".sql", ".mcfunction",
+            ".lang", ".molang", ".mcmeta", ".ini", ".cfg", ".csv",
+            ".log"
         )
 
         val input = contentResolver.openInputStream(uri)
-            ?: throw Exception("Không mở được ZIP")
+            ?: throw Exception("Cannot open ZIP archive")
 
         ZipInputStream(input).use { zip ->
             var entry = zip.nextEntry
@@ -1043,49 +1081,36 @@ class MainActivity : Activity() {
             while (entry != null) {
                 if (!entry.isDirectory) {
                     entries++
-
                     if (entries > 100) {
-                        throw Exception("ZIP có quá 100 tệp")
+                        throw Exception("Archive contains more than 100 files")
                     }
 
                     val name = entry.name.replace("\\", "/")
-
-                    val safePath =
-                        !name.startsWith("/") &&
-                            !name.split("/").any { it == ".." }
+                    val safePath = !name.startsWith("/") &&
+                        !name.split("/").any { it == ".." }
 
                     if (safePath &&
-                        allowed.any { name.lowercase().endsWith(it) }
+                        allowed.any { name.lowercase(Locale.ROOT).endsWith(it) }
                     ) {
                         val bytes = java.io.ByteArrayOutputStream()
                         var count: Int
 
-                        while (
-                            zip.read(buffer).also { count = it } != -1
-                        ) {
+                        while (zip.read(buffer).also { count = it } != -1) {
                             total += count
-
                             if (total > 2_000_000L) {
-                                throw Exception(
-                                    "Nội dung giải nén vượt 2 MB"
-                                )
+                                throw Exception("Extracted text exceeds 2 MB")
                             }
-
                             bytes.write(buffer, 0, count)
                         }
 
-                        val text = bytes.toString("UTF-8")
-
-                        out.append("\n\n[ZIP FILE: ")
+                        out.append("\n\n[ARCHIVE FILE: ")
                             .append(name)
                             .append("]\n")
-                            .append(text)
-                            .append("\n[END ZIP FILE]\n")
+                            .append(bytes.toString("UTF-8"))
+                            .append("\n[END ARCHIVE FILE]\n")
 
                         if (out.length > 120000) {
-                            throw Exception(
-                                "Nội dung ZIP vượt 120.000 ký tự"
-                            )
+                            throw Exception("Archive text exceeds 120,000 characters")
                         }
                     }
                 }
@@ -1096,7 +1121,10 @@ class MainActivity : Activity() {
         }
 
         if (out.isEmpty()) {
-            throw Exception("ZIP không có tệp code/văn bản được hỗ trợ")
+            throw Exception(
+                "No supported text/code files found in the archive. " +
+                    "Binary textures, models and sounds are not read as text."
+            )
         }
 
         return out.toString()
@@ -1107,25 +1135,29 @@ class MainActivity : Activity() {
             try {
                 val bytes = contentResolver.openInputStream(uri)
                     ?.use { it.readBytes() }
-                    ?: throw Exception("Không đọc được ảnh")
+                    ?: throw Exception("Cannot read image")
 
                 if (bytes.size > 5 * 1024 * 1024) {
-                    throw Exception("Ảnh vượt giới hạn 5 MB")
+                    throw Exception("Image exceeds 5 MB")
                 }
 
                 val mime = contentResolver.getType(uri) ?: "image/jpeg"
-
                 if (!mime.startsWith("image/")) {
-                    throw Exception("Tệp này không phải ảnh")
+                    throw Exception("This file is not an image")
                 }
+
+                val bitmap = BitmapFactory.decodeByteArray(
+                    bytes, 0, bytes.size
+                ) ?: throw Exception("Unsupported or damaged image")
 
                 pendingImageBase64 =
                     Base64.encodeToString(bytes, Base64.NO_WRAP)
-
                 pendingImageMime =
                     if (mime == "image/jpg") "image/jpeg" else mime
-
                 pendingImageName = queryName(uri) ?: "image"
+                pendingImageBytes = bytes
+
+                bitmap.recycle()
 
                 runOnUiThread {
                     Toast.makeText(
@@ -1137,14 +1169,13 @@ class MainActivity : Activity() {
                         ),
                         Toast.LENGTH_LONG
                     ).show()
-
                     refreshMainPreservingDraft()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     Toast.makeText(
                         this,
-                        "Lỗi ảnh: ${e.message}",
+                        "Image error: ${e.message}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -1181,7 +1212,7 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------
-    // GỬI TIN NHẮN / API
+    // SEND PROMPT / API
     // -----------------------------
 
     private fun sendPrompt() {
@@ -1192,9 +1223,7 @@ class MainActivity : Activity() {
         if (typed.isEmpty() &&
             attachedText.isBlank() &&
             pendingImageBase64 == null
-        ) {
-            return
-        }
+        ) return
 
         val imageData = pendingImageBase64
         val imageMime = pendingImageMime
@@ -1203,12 +1232,10 @@ class MainActivity : Activity() {
         val question = buildString {
             append(typed)
 
-            if (attachedText.isNotBlank()) {
-                append(attachedText)
-            }
+            if (attachedText.isNotBlank()) append(attachedText)
 
             if (imageData != null) {
-                append("\n\n[Đính kèm ảnh: $imageName]")
+                append("\n\n[Image attached: $imageName]")
             }
         }.trim()
 
@@ -1226,13 +1253,14 @@ class MainActivity : Activity() {
                 ),
                 Toast.LENGTH_LONG
             ).show()
-
             showSettings()
             return
         }
 
         attachedText = ""
+        attachedFileNames.clear()
         pendingImageBase64 = null
+        pendingImageBytes = null
         pendingImageName = ""
 
         val chat = currentChat() ?: run {
@@ -1286,15 +1314,11 @@ class MainActivity : Activity() {
                     connectTimeout = 20000
                     readTimeout = 90000
                     doOutput = true
-
                     setRequestProperty(
                         "Content-Type",
                         "application/json; charset=UTF-8"
                     )
-                    setRequestProperty(
-                        "Authorization",
-                        "Bearer $key"
-                    )
+                    setRequestProperty("Authorization", "Bearer $key")
                 }
 
                 try {
@@ -1305,11 +1329,29 @@ class MainActivity : Activity() {
                             .put("role", "system")
                             .put(
                                 "content",
-                                "Bạn là DarkGPT, trợ lý lập trình game và ứng dụng. " +
-                                    "Hãy giải thích lỗi và hỗ trợ mã nguồn hữu ích. " +
-                                    "Khi trả về nhiều tệp, dùng khối code riêng " +
-                                    "và ghi filename: TenTep.ext trong dòng mở đầu. " +
-                                    "Nếu có ảnh, hãy phân tích ảnh nếu model hỗ trợ vision."
+                                when (language()) {
+                                    "en" ->
+                                        "You are DarkGPT, an assistant for game " +
+                                            "and app development. Explain errors and " +
+                                            "provide useful source code. When returning " +
+                                            "multiple files, use separate code blocks " +
+                                            "and put filename: FileName.ext in the opening " +
+                                            "code fence. Analyze images when the model " +
+                                            "supports vision."
+                                    "ru" ->
+                                        "Вы DarkGPT, помощник по разработке игр и " +
+                                            "приложений. Объясняйте ошибки и предоставляйте " +
+                                            "полезный исходный код. Для нескольких файлов " +
+                                            "используйте отдельные блоки кода и указывайте " +
+                                            "filename: FileName.ext в начале блока. " +
+                                            "Анализируйте изображения, если модель поддерживает vision."
+                                    else ->
+                                        "Bạn là DarkGPT, trợ lý lập trình game và ứng dụng. " +
+                                            "Hãy giải thích lỗi và hỗ trợ mã nguồn hữu ích. " +
+                                            "Khi trả về nhiều tệp, dùng khối code riêng và ghi " +
+                                            "filename: TenTep.ext trong dòng mở đầu. Nếu có ảnh, " +
+                                            "hãy phân tích ảnh nếu model hỗ trợ vision."
+                                }
                             )
                     )
 
@@ -1363,7 +1405,6 @@ class MainActivity : Activity() {
                     }
 
                     val status = connection.responseCode
-
                     val responseStream = if (status in 200..299) {
                         connection.inputStream
                     } else {
@@ -1387,32 +1428,27 @@ class MainActivity : Activity() {
 
                     when (content) {
                         is String -> content
-
                         is JSONArray -> {
                             val result = StringBuilder()
-
                             for (i in 0 until content.length()) {
                                 val part = content.optJSONObject(i)
-
                                 if (part?.optString("type") == "text") {
                                     result.append(part.optString("text"))
                                 }
                             }
-
                             result.toString().ifBlank {
-                                "AI trả về nội dung không phải văn bản."
+                                "AI returned no readable text."
                             }
                         }
-
-                        else -> "AI không trả lời bằng văn bản."
+                        else -> "AI did not return text."
                     }
                 } finally {
                     connection.disconnect()
                 }
             } catch (e: Exception) {
-                "Lỗi kết nối: ${e.message ?: "Không xác định"}. " +
-                    "Nếu gửi ảnh, hãy kiểm tra model có hỗ trợ vision " +
-                    "và API có hỗ trợ image_url."
+                "Connection error: ${e.message ?: "Unknown error"}. " +
+                    "For images, verify that the selected model and API " +
+                    "support image_url/vision."
             }
 
             runOnUiThread {
@@ -1422,12 +1458,9 @@ class MainActivity : Activity() {
 
                 saveChats()
 
-                if (currentChatId == chatId) {
-                    renderCurrentChat()
-                }
+                if (currentChatId == chatId) renderCurrentChat()
 
                 sending = false
-
                 if (::sendButton.isInitialized) {
                     sendButton.isEnabled = true
                     sendButton.text = tr("Gửi", "Send", "Отправить")
@@ -1437,7 +1470,7 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------
-    // HIỂN THỊ TIN NHẮN / CODE
+    // MESSAGE RENDERING
     // -----------------------------
 
     private fun addMessageView(
@@ -1455,9 +1488,15 @@ class MainActivity : Activity() {
             )
         }
 
+        val displayRole = when (role) {
+            "Bạn" -> tr("Bạn", "You", "Вы")
+            "DarkGPT" -> "DarkGPT"
+            else -> role
+        }
+
         bubble.addView(
             textView(
-                role,
+                displayRole,
                 13f,
                 if (isUser) Color.rgb(190, 180, 255) else green
             ).apply {
@@ -1476,40 +1515,29 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun renderContent(
-        parent: LinearLayout,
-        content: String
-    ) {
+    private fun renderContent(parent: LinearLayout, content: String) {
         val pattern = Regex("```([^\\n`]*)\\n([\\s\\S]*?)```")
         var cursor = 0
 
         pattern.findAll(content).forEach { match ->
             val before = content.substring(cursor, match.range.first)
-
-            if (before.isNotEmpty()) {
-                addSelectableText(parent, before)
-            }
+            if (before.isNotEmpty()) addSelectableText(parent, before)
 
             addCodeBlock(
                 parent,
                 match.groupValues[1].trim(),
                 match.groupValues[2].trimEnd('\n', '\r')
             )
-
             cursor = match.range.last + 1
         }
 
         val remaining = content.substring(cursor)
-
         if (remaining.isNotEmpty() || content.isEmpty()) {
             addSelectableText(parent, remaining)
         }
     }
 
-    private fun addSelectableText(
-        parent: LinearLayout,
-        value: String
-    ) {
+    private fun addSelectableText(parent: LinearLayout, value: String) {
         parent.addView(
             TextView(this).apply {
                 text = value
@@ -1544,9 +1572,7 @@ class MainActivity : Activity() {
                 if (language.isBlank()) "CODE" else language.uppercase(),
                 12f,
                 green
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-            },
+            ).apply { typeface = Typeface.DEFAULT_BOLD },
             LinearLayout.LayoutParams(0, -2, 1f)
         )
 
@@ -1598,7 +1624,7 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------
-    // XUẤT CODE THÀNH ZIP
+    // EXPORT CODE TO ZIP
     // -----------------------------
 
     private fun exportZip() {
@@ -1661,21 +1687,18 @@ class MainActivity : Activity() {
                 else -> "txt"
             }
 
-            var name = (
-                filename ?: "source_${index + 1}.$extension"
-            ).replace("\\", "_")
+            var name = (filename ?: "source_${index + 1}.$extension")
+                .replace("\\", "_")
                 .replace("/", "_")
                 .replace("..", "_")
 
-            if (name.isBlank()) {
-                name = "source_${index + 1}.$extension"
-            }
+            if (name.isBlank()) name = "source_${index + 1}.$extension"
 
             val baseName = name.substringBeforeLast('.', name)
             val ext = name.substringAfterLast('.', "")
             var suffix = 2
 
-            while (!usedNames.add(name.lowercase())) {
+            while (!usedNames.add(name.lowercase(Locale.ROOT))) {
                 name = if (ext.isBlank()) {
                     "${baseName}_$suffix"
                 } else {
@@ -1703,7 +1726,7 @@ class MainActivity : Activity() {
     private fun writeZip(uri: Uri) {
         try {
             val output = contentResolver.openOutputStream(uri)
-                ?: throw Exception("Không mở được tệp đích")
+                ?: throw Exception("Cannot open destination")
 
             output.use { stream ->
                 ZipOutputStream(stream).use { zip ->
@@ -1732,7 +1755,7 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             Toast.makeText(
                 this,
-                "Lỗi tạo ZIP: ${e.message}",
+                "ZIP error: ${e.message}",
                 Toast.LENGTH_LONG
             ).show()
         } finally {
