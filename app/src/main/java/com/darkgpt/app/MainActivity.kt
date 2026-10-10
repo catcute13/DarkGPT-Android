@@ -84,7 +84,6 @@ class MainActivity : Activity() {
     private var pendingImageName = ""
     private var pendingImageBytes: ByteArray? = null
     
-    // Lưu trữ thông tin file chờ xuất theo yêu cầu (Đã sửa thành var)
     private enum class ExportType { NONE, TXT, ZIP, MCPACK }
     private var pendingExportType = ExportType.NONE
     private var pendingExportContent = ""
@@ -658,7 +657,891 @@ class MainActivity : Activity() {
                         ).show()
                     } else {
                         AlertDialog.Builder(this)
-                            .setM        ).findAll(answer).toList()
+                            .setMessage(
+                                tr(
+                                    "Xóa cuộc trò chuyện này?",
+                                    "Delete this conversation?",
+                                    "Удалить этот разговор?"
+                                )
+                            )
+                            .setNegativeButton(
+                                tr("Hủy", "Cancel", "Отмена"), null
+                            )
+                            .setPositiveButton(
+                                tr("Xóa", "Delete", "Удалить")
+                            ) { _, _ ->
+                                chats.remove(chat)
+
+                                if (currentChatId == chat.id) {
+                                    if (chats.isEmpty()) createChat(false)
+                                    currentChatId = chats.first().id
+                                }
+
+                                saveChats()
+                                showHistory()
+                            }
+                            .show()
+                    }
+                }
+            )
+
+            item.addView(actions)
+            list.addView(
+                item,
+                LinearLayout.LayoutParams(-1, -2).apply {
+                    bottomMargin = dp(8)
+                }
+            )
+        }
+
+        layout.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        layout.addView(
+            makeButton(tr("Quay lại", "Back", "Назад")) { showMain() }
+        )
+        setContentView(layout)
+    }
+
+    // -----------------------------
+    // SETTINGS
+    // -----------------------------
+
+    private fun showSettings() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            setBackgroundColor(bg)
+        }
+
+        layout.addView(
+            textView(
+                tr("Cài đặt", "Settings", "Настройки"),
+                25f,
+                white
+            ).apply { typeface = Typeface.DEFAULT_BOLD }
+        )
+
+        layout.addView(
+            textView(
+                tr(
+                    "API tương thích với Chat Completions",
+                    "Chat Completions compatible API",
+                    "API, совместимый с Chat Completions"
+                ),
+                13f,
+                muted
+            )
+        )
+
+        fun addField(
+            label: String,
+            hint: String,
+            keyName: String,
+            secret: Boolean = false
+        ): EditText {
+            layout.addView(
+                textView(label, 14f, white).apply {
+                    setPadding(0, dp(10), 0, dp(4))
+                }
+            )
+
+            val field = EditText(this).apply {
+                this.hint = hint
+                setText(prefs.getString(keyName, "") ?: "")
+                setTextColor(white)
+                setHintTextColor(muted)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setBackgroundColor(panel)
+                isSingleLine = true
+                inputType = if (secret) {
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                } else {
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_NORMAL
+                }
+
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(
+                        s: CharSequence?, start: Int, count: Int, after: Int
+                    ) {}
+
+                    override fun onTextChanged(
+                        s: CharSequence?, start: Int, before: Int, count: Int
+                    ) {
+                        prefs.edit()
+                            .putString(keyName, s?.toString() ?: "")
+                            .apply()
+                    }
+
+                    override fun afterTextChanged(s: Editable?) {}
+                })
+            }
+
+            layout.addView(field, LinearLayout.LayoutParams(-1, -2))
+            return field
+        }
+
+        val base = addField(
+            "API Base URL",
+            "https://api.example.com/v1",
+            "base"
+        )
+        val key = addField("API Key", "API key", "key", true)
+        val model = addField("Model", "Model name", "model")
+
+        layout.addView(
+            textView(
+                tr("Ngôn ngữ", "Language", "Язык"),
+                14f,
+                white
+            ).apply { setPadding(0, dp(12), 0, dp(4)) }
+        )
+
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            listOf("Tiếng Việt", "English", "Русский")
+        )
+
+        spinner.setSelection(
+            when (language()) {
+                "en" -> 1
+                "ru" -> 2
+                else -> 0
+            }
+        )
+
+        var ignoreInitialSelection = true
+
+        spinner.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+
+                override fun onItemSelected(
+                    parent: AdapterView<*>?,
+                    view: View?,
+                    position: Int,
+                    id: Long
+                ) {
+                    if (ignoreInitialSelection) {
+                        ignoreInitialSelection = false
+                        return
+                    }
+
+                    val selected = when (position) {
+                        1 -> "en"
+                        2 -> "ru"
+                        else -> "vi"
+                    }
+
+                    if (selected != language()) {
+                        prefs.edit()
+                            .putString("base", base.text.toString())
+                            .putString("key", key.text.toString())
+                            .putString("model", model.text.toString())
+                            .putString("language", selected)
+                            .apply()
+
+                        hideKeyboard()
+                        showSettings()
+                    }
+                }
+            }
+
+        layout.addView(spinner)
+
+        layout.addView(
+            makeButton(
+                tr("Lưu cài đặt", "Save settings", "Сохранить")
+            ) {
+                val b = base.text.toString().trim().trimEnd('/')
+                val k = key.text.toString().trim()
+                val m = model.text.toString().trim()
+
+                if (b.isBlank() || k.isBlank() || m.isBlank()) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Hãy điền đủ Base URL, API Key và Model",
+                            "Fill in Base URL, API Key and Model",
+                            "Заполните Base URL, API Key и Model"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@makeButton
+                }
+
+                if (!b.startsWith("https://")) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Base URL cần bắt đầu bằng https://",
+                            "Base URL must start with https://",
+                            "Base URL должен начинаться с https://"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@makeButton
+                }
+
+                prefs.edit()
+                    .putString("base", b)
+                    .putString("key", k)
+                    .putString("model", m)
+                    .apply()
+
+                hideKeyboard()
+                showMain()
+
+                Toast.makeText(
+                    this,
+                    tr("Đã lưu", "Saved", "Сохранено"),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.apply {
+                setBackgroundColor(purple)
+                setTextColor(white)
+            }
+        )
+
+        layout.addView(
+            makeButton(tr("Quay lại", "Back", "Назад")) {
+                hideKeyboard()
+                showMain()
+            }
+        )
+
+        setContentView(
+            ScrollView(this).apply {
+                setBackgroundColor(bg)
+                addView(layout, ViewGroup.LayoutParams(-1, -2))
+                isFillViewport = true
+            }
+        )
+    }
+
+    private fun hideKeyboard() {
+        currentFocus?.let {
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(it.windowToken, 0)
+        }
+    }
+
+    // -----------------------------
+    // PICK FILES AND IMAGES
+    // -----------------------------
+
+    private fun chooseFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, 501)
+    }
+
+    private fun chooseImage() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        startActivityForResult(intent, 503)
+    }
+
+    @Deprecated("Uses startActivityForResult for compatibility")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data?.data == null) return
+
+        when (requestCode) {
+            501 -> readAttachment(data.data!!)
+            502 -> handleExportFileResult(data.data!!)
+            503 -> readImage(data.data!!)
+        }
+    }
+
+    private fun readAttachment(uri: Uri) {
+        thread {
+            try {
+                val name = queryName(uri) ?: "attachment.txt"
+                val mime = contentResolver.getType(uri) ?: ""
+                val lower = name.lowercase(Locale.ROOT)
+
+                val isMinecraftArchive = listOf(
+                    ".zip", ".mcpack", ".mcaddon", ".mcworld", ".mctemplate"
+                ).any { lower.endsWith(it) }
+
+                val content = when {
+                    lower.endsWith(".pdf") || mime == "application/pdf" -> {
+                        val input = contentResolver.openInputStream(uri)
+                            ?: throw Exception("Cannot open PDF")
+
+                        input.use {
+                            val document = PDDocument.load(it)
+                            try {
+                                PDFTextStripper().getText(document)
+                            } finally {
+                                document.close()
+                            }
+                        }
+                    }
+
+                    isMinecraftArchive ||
+                        mime == "application/zip" ||
+                        mime == "application/x-zip-compressed" -> {
+                        readZipText(uri)
+                    }
+
+                    mime.startsWith("text/") ||
+                        listOf(
+                            ".kt", ".java", ".json", ".xml", ".md",
+                            ".txt", ".gradle", ".kts", ".yml", ".yaml",
+                            ".py", ".js", ".html", ".css", ".properties",
+                            ".toml", ".sh", ".c", ".cpp", ".h", ".hpp",
+                            ".sql", ".mcfunction", ".lang", ".molang",
+                            ".mcmeta", ".ini", ".cfg", ".csv", ".log"
+                        ).any { lower.endsWith(it) } -> {
+                        contentResolver.openInputStream(uri)
+                            ?.bufferedReader()
+                            ?.use { it.readText() }
+                            ?: throw Exception("Cannot read file")
+                    }
+
+                    else -> {
+                        throw Exception(
+                            "Unsupported format. Choose text, code, PDF, ZIP, " +
+                                "MCADDON, MCPACK or MCWORLD."
+                        )
+                    }
+                }
+
+                if (content.length > 120000) {
+                    throw Exception("File exceeds 120,000 characters")
+                }
+
+                synchronized(attachedFileNames) {
+                    attachedFileNames.add(name)
+                    attachedText += "\n\n[FILE: $name]\n$content\n[END FILE]"
+                }
+
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Đã đọc tệp; nội dung sẽ gửi cùng câu hỏi kế tiếp.",
+                            "File read; it will be sent with your next prompt.",
+                            "Файл прочитан; он будет отправлен со следующим запросом."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    refreshMainPreservingDraft()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "File error: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun readZipText(uri: Uri): String {
+        val out = StringBuilder()
+        var entries = 0
+        var total = 0L
+
+        val allowed = listOf(
+            ".kt", ".java", ".json", ".xml", ".md", ".txt",
+            ".gradle", ".kts", ".yml", ".yaml", ".py", ".js",
+            ".html", ".css", ".properties", ".toml", ".sh",
+            ".c", ".cpp", ".h", ".hpp", ".sql", ".mcfunction",
+            ".lang", ".molang", ".mcmeta", ".ini", ".cfg", ".csv",
+            ".log"
+        )
+
+        val input = contentResolver.openInputStream(uri)
+            ?: throw Exception("Cannot open ZIP archive")
+
+        ZipInputStream(input).use { zip ->
+            var entry = zip.nextEntry
+            val buffer = ByteArray(8192)
+
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    entries++
+                    if (entries > 100) {
+                        throw Exception("Archive contains more than 100 files")
+                    }
+
+                    val name = entry.name.replace("\\", "/")
+                    val safePath = !name.startsWith("/") &&
+                        !name.split("/").any { it == ".." }
+
+                    if (safePath &&
+                        allowed.any { name.lowercase(Locale.ROOT).endsWith(it) }
+                    ) {
+                        val bytes = java.io.ByteArrayOutputStream()
+                        var count: Int
+
+                        while (zip.read(buffer).also { count = it } != -1) {
+                            total += count
+                            if (total > 2_000_000L) {
+                                throw Exception("Extracted text exceeds 2 MB")
+                            }
+                            bytes.write(buffer, 0, count)
+                        }
+
+                        out.append("\n\n[ARCHIVE FILE: ")
+                            .append(name)
+                            .append("]\n")
+                            .append(bytes.toString("UTF-8"))
+                            .append("\n[END ARCHIVE FILE]\n")
+
+                        if (out.length > 120000) {
+                            throw Exception("Archive text exceeds 120,000 characters")
+                        }
+                    }
+                }
+
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+
+        if (out.isEmpty()) {
+            throw Exception(
+                "No supported text/code files found in the archive. " +
+                    "Binary textures, models and sounds are not read as text."
+            )
+        }
+
+        return out.toString()
+    }
+
+    private fun readImage(uri: Uri) {
+        thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)
+                    ?.use { it.readBytes() }
+                    ?: throw Exception("Cannot read image")
+
+                if (bytes.size > 5 * 1024 * 1024) {
+                    throw Exception("Image exceeds 5 MB")
+                }
+
+                val mime = contentResolver.getType(uri) ?: "image/jpeg"
+                if (!mime.startsWith("image/")) {
+                    throw Exception("This file is not an image")
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(
+                    bytes, 0, bytes.size
+                ) ?: throw Exception("Unsupported or damaged image")
+
+                pendingImageBase64 =
+                    Base64.encodeToString(bytes, Base64.NO_WRAP)
+                pendingImageMime =
+                    if (mime == "image/jpg") "image/jpeg" else mime
+                pendingImageName = queryName(uri) ?: "image"
+                pendingImageBytes = bytes
+
+                bitmap.recycle()
+
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Đã chọn ảnh. Hãy nhập câu hỏi rồi gửi.",
+                            "Image attached. Type a question and send.",
+                            "Изображение прикреплено. Введите вопрос и отправьте."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    refreshMainPreservingDraft()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Image error: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun refreshMainPreservingDraft() {
+        val draft = if (::prompt.isInitialized) {
+            prompt.text.toString()
+        } else {
+            ""
+        }
+
+        showMain()
+        prompt.setText(draft)
+        prompt.setSelection(prompt.text.length)
+    }
+
+    private fun queryName(uri: Uri): String? {
+        return try {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // -----------------------------
+    // SEND PROMPT / API
+    // -----------------------------
+
+    private fun sendPrompt() {
+        if (sending) return
+
+        val typed = prompt.text.toString().trim()
+
+        if (typed.isEmpty() &&
+            attachedText.isBlank() &&
+            pendingImageBase64 == null
+        ) return
+
+        val lowerTyped = typed.lowercase(Locale.ROOT)
+        pendingExportType = when {
+            lowerTyped.contains(".mcpack") || lowerTyped.contains("mcpack") -> ExportType.MCPACK
+            lowerTyped.contains(".zip") || lowerTyped.contains("zip code") || lowerTyped.contains("xuất zip") || lowerTyped.contains("tạo zip") -> ExportType.ZIP
+            lowerTyped.contains(".txt") || lowerTyped.contains("lưu vào file txt") || lowerTyped.contains("tạo file txt") -> ExportType.TXT
+            else -> ExportType.NONE
+        }
+
+        val imageData = pendingImageBase64
+        val imageMime = pendingImageMime
+        val imageName = pendingImageName
+
+        val question = buildString {
+            append(typed)
+
+            if (attachedText.isNotBlank()) append(attachedText)
+
+            if (imageData != null) {
+                append("\n\n[Image attached: $imageName]")
+            }
+        }.trim()
+
+        val base = prefs.getString("base", "") ?: ""
+        val key = prefs.getString("key", "") ?: ""
+        val model = prefs.getString("model", "") ?: ""
+
+        if (base.isBlank() || key.isBlank() || model.isBlank()) {
+            Toast.makeText(
+                this,
+                tr(
+                    "Hãy cài đặt API trước",
+                    "Configure the API first",
+                    "Сначала настройте API"
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+            showSettings()
+            return
+        }
+
+        attachedText = ""
+        attachedFileNames.clear()
+        pendingImageBase64 = null
+        pendingImageBytes = null
+        pendingImageName = ""
+
+        val chat = currentChat() ?: run {
+            createChat(false)
+            currentChat()!!
+        }
+
+        chat.messages.add(Message("Bạn", question))
+
+        if (chat.messages.count { it.role == "Bạn" } == 1) {
+            chat.title = typed.take(36).ifBlank {
+                tr("Tệp đính kèm", "Attachment", "Вложение")
+            }
+        }
+
+        saveChats()
+        renderCurrentChat()
+
+        prompt.setText("")
+        hideKeyboard()
+
+        sending = true
+        sendButton.isEnabled = false
+        sendButton.text = "..."
+
+        chatList.addView(
+            textView(
+                tr(
+                    "DarkGPT đang xử lý...",
+                    "DarkGPT is thinking...",
+                    "DarkGPT думает..."
+                ),
+                14f,
+                muted
+            ).apply {
+                setPadding(dp(12), dp(8), dp(12), dp(12))
+                tag = "loading"
+            }
+        )
+
+        val chatId = currentChatId
+        val history = chat.messages.toList()
+        val currentExportType = pendingExportType
+
+        thread {
+            var apiSuccess = false
+            val answer = try {
+                val connection = (
+                    URL(base.trimEnd('/') + "/chat/completions")
+                        .openConnection() as HttpURLConnection
+                ).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20000
+                    readTimeout = 90000
+                    doOutput = true
+                    setRequestProperty(
+                        "Content-Type",
+                        "application/json; charset=UTF-8"
+                    )
+                    setRequestProperty("Authorization", "Bearer $key")
+                }
+
+                try {
+                    val messages = JSONArray()
+
+                    messages.put(
+                        JSONObject()
+                            .put("role", "system")
+                            .put(
+                                "content",
+                                when (language()) {
+                                    "en" ->
+                                        "You are DarkGPT, an assistant for game " +
+                                            "and app development. Explain errors and " +
+                                            "provide useful source code. When returning " +
+                                            "multiple files, use separate code blocks " +
+                                            "and put filename: FileName.ext in the opening " +
+                                            "code fence. Analyze images when the model " +
+                                            "supports vision."
+                                    "ru" ->
+                                        "Вы DarkGPT, помощник по разработке игр и " +
+                                            "приложений. Объясняйте ошибки и предоставляйте " +
+                                            "полезный исходный код. Для нескольких файлов " +
+                                            "используйте отдельные блоки кода и указывайте " +
+                                            "filename: FileName.ext в начале блока. " +
+                                            "Анализируйте изображения, если модель поддерживает vision."
+                                    else ->
+                                        "Bạn là DarkGPT, trợ lý lập trình game và ứng dụng. " +
+                                            "Hãy giải thích lỗi và hỗ trợ mã nguồn hữu ích. " +
+                                            "Khi trả về nhiều tệp, dùng khối code riêng và ghi " +
+                                            "filename: TenTep.ext trong dòng mở đầu. Nếu có ảnh, " +
+                                            "hãy phân tích ảnh nếu model hỗ trợ vision."
+                                }
+                            )
+                    )
+
+                    history.takeLast(30).forEachIndexed { index, message ->
+                        val role = if (message.role == "Bạn") {
+                            "user"
+                        } else {
+                            "assistant"
+                        }
+
+                        val content: Any =
+                            if (index == history.lastIndex &&
+                                role == "user" &&
+                                imageData != null
+                            ) {
+                                JSONArray()
+                                    .put(
+                                        JSONObject()
+                                            .put("type", "text")
+                                            .put("text", message.content)
+                                    )
+                                    .put(
+                                        JSONObject()
+                                            .put("type", "image_url")
+                                            .put(
+                                                "image_url",
+                                                JSONObject().put(
+                                                    "url",
+                                                    "data:$imageMime;base64,$imageData"
+                                                )
+                                            )
+                                    )
+                            } else {
+                                message.content
+                            }
+
+                        messages.put(
+                            JSONObject()
+                                .put("role", role)
+                                .put("content", content)
+                        )
+                    }
+
+                    val body = JSONObject()
+                        .put("model", model)
+                        .put("messages", messages)
+                        .put("stream", false)
+
+                    connection.outputStream.use {
+                        it.write(body.toString().toByteArray(Charsets.UTF_8))
+                    }
+
+                    val status = connection.responseCode
+                    val responseStream = if (status in 200..299) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream
+                    }
+
+                    val raw = responseStream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        ?: ""
+
+                    if (status !in 200..299) {
+                        throw Exception("HTTP $status: ${raw.take(1500)}")
+                    }
+
+                    apiSuccess = true
+                    val content = JSONObject(raw)
+                        .getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("message")
+                        .opt("content")
+
+                    when (content) {
+                        is String -> content
+                        is JSONArray -> {
+                            val result = StringBuilder()
+                            for (i in 0 until content.length()) {
+                                val part = content.optJSONObject(i)
+                                if (part?.optString("type") == "text") {
+                                    result.append(part.optString("text"))
+                                }
+                            }
+                            result.toString().ifBlank {
+                                "AI returned no readable text."
+                            }
+                        }
+                        else -> "AI did not return text."
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+            } catch (e: Exception) {
+                "Connection error: ${e.message ?: "Unknown error"}. " +
+                    "For images, verify that the selected model and API " +
+                    "support image_url/vision."
+            }
+
+            runOnUiThread {
+                chats.firstOrNull { it.id == chatId }
+                    ?.messages
+                    ?.add(Message("DarkGPT", answer))
+
+                saveChats()
+
+                if (currentChatId == chatId) renderCurrentChat()
+
+                sending = false
+                if (::sendButton.isInitialized) {
+                    sendButton.isEnabled = true
+                    sendButton.text = tr("Gửi", "Send", "Отправить")
+                }
+
+                if (apiSuccess && currentExportType != ExportType.NONE) {
+                    triggerFileExport(currentExportType, answer)
+                }
+            }
+        }
+    }
+
+    private fun triggerFileExport(type: ExportType, answer: String) {
+        when (type) {
+            ExportType.TXT -> {
+                pendingExportContent = answer
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-response.txt")
+                }
+                startActivityForResult(intent, 502)
+            }
+            ExportType.ZIP -> {
+                val files = extractCodeBlocks(answer)
+                if (files.isEmpty()) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Không tìm thấy khối code phù hợp để tạo ZIP.",
+                            "No valid code blocks found to create ZIP.",
+                            "Не найдены подходящие блоки кода для ZIP."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                pendingExportFiles = files
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-source.zip")
+                }
+                startActivityForResult(intent, 502)
+            }
+            ExportType.MCPACK -> {
+                val files = extractCodeBlocks(answer)
+                val hasManifest = files.any { it.first.lowercase(Locale.ROOT) == "manifest.json" }
+                if (!hasManifest) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Thiếu tệp manifest.json hợp lệ để tạo gói MCPACK thực sự.",
+                            "Missing valid manifest.json to create a real MCPACK addon.",
+                            "Отсутствует действительный manifest.json для создания MCPACK."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                pendingExportFiles = files
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-addon.mcpack")
+                }
+                startActivityForResult(intent, 502)
+            }
+            ExportType.NONE -> {}
+        }
+    }
+
+    private fun extractCodeBlocks(answer: String): List<Pair<String, String>> {
+        val blocks = Regex(
+            "        ).findAll(answer).toList()
 
         val files = mutableListOf<Pair<String, String>>()
         val usedNames = mutableSetOf<String>()
