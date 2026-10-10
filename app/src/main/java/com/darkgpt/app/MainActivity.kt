@@ -1,4 +1,3 @@
-
 package com.darkgpt.app
 
 import android.app.Activity
@@ -84,7 +83,12 @@ class MainActivity : Activity() {
     private var pendingImageMime = "image/jpeg"
     private var pendingImageName = ""
     private var pendingImageBytes: ByteArray? = null
-    private var pendingZipFiles: List<Pair<String, String>> = emptyList()
+    
+    // Lưu trữ thông tin file chờ xuất theo yêu cầu
+    private enum class ExportType { NONE, TXT, ZIP, MCPACK }
+    private var pendingExportType = ExportType.NONE
+    private var pendingExportContent = ""
+    private var pendingExportFiles: List<Pair<String, String>> = emptyList()
 
     data class Message(
         val role: String,
@@ -366,12 +370,6 @@ class MainActivity : Activity() {
             makeButton(
                 tr("🖼 Chọn ảnh", "🖼 Choose image", "🖼 Изображение")
             ) { chooseImage() }
-        )
-
-        fileRow.addView(
-            makeButton(
-                tr("Tạo ZIP code", "Export code ZIP", "ZIP с кодом")
-            ) { exportZip() }
         )
 
         root.addView(fileRow)
@@ -964,7 +962,7 @@ class MainActivity : Activity() {
 
         when (requestCode) {
             501 -> readAttachment(data.data!!)
-            502 -> writeZip(data.data!!)
+            502 -> handleExportFileResult(data.data!!)
             503 -> readImage(data.data!!)
         }
     }
@@ -1225,6 +1223,15 @@ class MainActivity : Activity() {
             pendingImageBase64 == null
         ) return
 
+        // 1. Phân tích định dạng file từ prompt người dùng trước khi gửi yêu cầu AI
+        val lowerTyped = typed.lowercase(Locale.ROOT)
+        pendingExportType = when {
+            lowerTyped.contains(".mcpack") || lowerTyped.contains("mcpack") -> ExportType.MCPACK
+            lowerTyped.contains(".zip") || lowerTyped.contains("zip code") || lowerTyped.contains("xuất zip") || lowerTyped.contains("tạo zip") -> ExportType.ZIP
+            lowerTyped.contains(".txt") || lowerTyped.contains("lưu vào file txt") || lowerTyped.contains("tạo file txt") -> ExportType.TXT
+            else -> ExportType.NONE
+        }
+
         val imageData = pendingImageBase64
         val imageMime = pendingImageMime
         val imageName = pendingImageName
@@ -1303,8 +1310,10 @@ class MainActivity : Activity() {
 
         val chatId = currentChatId
         val history = chat.messages.toList()
+        val currentExportType = pendingExportType
 
         thread {
+            var apiSuccess = false
             val answer = try {
                 val connection = (
                     URL(base.trimEnd('/') + "/chat/completions")
@@ -1420,6 +1429,7 @@ class MainActivity : Activity() {
                         throw Exception("HTTP $status: ${raw.take(1500)}")
                     }
 
+                    apiSuccess = true
                     val content = JSONObject(raw)
                         .getJSONArray("choices")
                         .getJSONObject(0)
@@ -1465,59 +1475,80 @@ class MainActivity : Activity() {
                     sendButton.isEnabled = true
                     sendButton.text = tr("Gửi", "Send", "Отправить")
                 }
+
+                // 4. Xử lý xuất file đúng thời điểm: Chỉ mở hộp thoại lưu file khi API thành công và có yêu cầu rõ ràng từ người dùng
+                if (apiSuccess && currentExportType != ExportType.NONE) {
+                    triggerFileExport(currentExportType, answer)
+                }
             }
         }
     }
 
-    // -----------------------------
-    // MESSAGE RENDERING
-    // -----------------------------
-
-    private fun addMessageView(
-        parent: LinearLayout,
-        role: String,
-        content: String
-    ) {
-        val isUser = role == "Bạn"
-
-        val bubble = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setBackgroundColor(
-                if (isUser) Color.rgb(38, 39, 65) else panel
-            )
-        }
-
-        val displayRole = when (role) {
-            "Bạn" -> tr("Bạn", "You", "Вы")
-            "DarkGPT" -> "DarkGPT"
-            else -> role
-        }
-
-        bubble.addView(
-            textView(
-                displayRole,
-                13f,
-                if (isUser) Color.rgb(190, 180, 255) else green
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-                setPadding(0, 0, 0, dp(6))
+    private fun triggerFileExport(type: ExportType, answer: String) {
+        when (type) {
+            ExportType.TXT -> {
+                pendingExportContent = answer
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-response.txt")
+                }
+                startActivityForResult(intent, 502)
             }
-        )
-
-        renderContent(bubble, content)
-
-        parent.addView(
-            bubble,
-            LinearLayout.LayoutParams(-1, -2).apply {
-                bottomMargin = dp(10)
+            ExportType.ZIP -> {
+                val files = extractCodeBlocks(answer)
+                if (files.isEmpty()) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Không tìm thấy khối code phù hợp để tạo ZIP.",
+                            "No valid code blocks found to create ZIP.",
+                            "Не найдены подходящие блоки кода для ZIP."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                pendingExportFiles = files
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-source.zip")
+                }
+                startActivityForResult(intent, 502)
             }
-        )
+            ExportType.MCPACK -> {
+                val files = extractCodeBlocks(answer)
+                // Kiểm tra xem có manifest.json hợp lệ hay không
+                val hasManifest = files.any { it.first.lowercase(Locale.ROOT) == "manifest.json" }
+                if (!hasManifest) {
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Thiếu tệp manifest.json hợp lệ để tạo gói MCPACK thực sự.",
+                            "Missing valid manifest.json to create a real MCPACK addon.",
+                            "Отсутствует действительный manifest.json для создания MCPACK."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                pendingExportFiles = files
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_TITLE, "DarkGPT-addon.mcpack")
+                }
+                startActivityForResult(intent, 502)
+            }
+            ExportType.NONE -> {}
+        }
     }
 
-    private fun renderContent(parent: LinearLayout, content: String) {
-        val pattern = Regex("```([^\\n`]*)\\n([\\s\\S]*?)```")
-        var cursor = 0
+    private fun extractCodeBlocks(answer: String): List<Pair<String, String>> {
+        val blocks = Regex(
+            "
+                    var cursor = 0
 
         pattern.findAll(content).forEach { match ->
             val before = content.substring(cursor, match.range.first)
@@ -1622,144 +1653,4 @@ class MainActivity : Activity() {
             Toast.LENGTH_SHORT
         ).show()
     }
-
-    // -----------------------------
-    // EXPORT CODE TO ZIP
-    // -----------------------------
-
-    private fun exportZip() {
-        val answer = currentChat()
-            ?.messages
-            ?.lastOrNull { it.role == "DarkGPT" }
-            ?.content
-
-        if (answer.isNullOrBlank()) {
-            Toast.makeText(
-                this,
-                tr(
-                    "Chưa có câu trả lời AI để xuất ZIP.",
-                    "No AI answer to export.",
-                    "Нет ответа ИИ для экспорта."
-                ),
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        val blocks = Regex(
-            "```([^\\n`]*)\\n([\\s\\S]*?)```"
-        ).findAll(answer).toList()
-
-        if (blocks.isEmpty()) {
-            Toast.makeText(
-                this,
-                tr(
-                    "Không tìm thấy khối code trong câu trả lời.",
-                    "No code blocks found in the answer.",
-                    "В ответе не найдены блоки кода."
-                ),
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        val files = mutableListOf<Pair<String, String>>()
-        val usedNames = mutableSetOf<String>()
-
-        blocks.forEachIndexed { index, match ->
-            val header = match.groupValues[1].trim()
-
-            val filename = Regex(
-                """filename:\s*([^\s]+)""",
-                RegexOption.IGNORE_CASE
-            ).find(header)?.groupValues?.get(1)
-
-            val extension = when {
-                header.contains("kotlin", true) || header == "kt" -> "kt"
-                header.contains("java", true) -> "java"
-                header.contains("xml", true) -> "xml"
-                header.contains("json", true) -> "json"
-                header.contains("python", true) || header == "py" -> "py"
-                header.contains("javascript", true) || header == "js" -> "js"
-                header.contains("html", true) -> "html"
-                header.contains("css", true) -> "css"
-                header.contains("gradle", true) -> "gradle.kts"
-                else -> "txt"
             }
-
-            var name = (filename ?: "source_${index + 1}.$extension")
-                .replace("\\", "_")
-                .replace("/", "_")
-                .replace("..", "_")
-
-            if (name.isBlank()) name = "source_${index + 1}.$extension"
-
-            val baseName = name.substringBeforeLast('.', name)
-            val ext = name.substringAfterLast('.', "")
-            var suffix = 2
-
-            while (!usedNames.add(name.lowercase(Locale.ROOT))) {
-                name = if (ext.isBlank()) {
-                    "${baseName}_$suffix"
-                } else {
-                    "${baseName}_$suffix.$ext"
-                }
-                suffix++
-            }
-
-            files.add(
-                name to match.groupValues[2].trimEnd('\n', '\r')
-            )
-        }
-
-        pendingZipFiles = files
-
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_TITLE, "DarkGPT-source.zip")
-        }
-
-        startActivityForResult(intent, 502)
-    }
-
-    private fun writeZip(uri: Uri) {
-        try {
-            val output = contentResolver.openOutputStream(uri)
-                ?: throw Exception("Cannot open destination")
-
-            output.use { stream ->
-                ZipOutputStream(stream).use { zip ->
-                    pendingZipFiles.forEach { (filename, content) ->
-                        val safeName = filename
-                            .replace("\\", "_")
-                            .replace("/", "_")
-                            .replace("..", "_")
-
-                        zip.putNextEntry(ZipEntry(safeName))
-                        zip.write(content.toByteArray(Charsets.UTF_8))
-                        zip.closeEntry()
-                    }
-                }
-            }
-
-            Toast.makeText(
-                this,
-                tr(
-                    "Đã tạo ZIP mã nguồn.",
-                    "Source ZIP created.",
-                    "ZIP с исходным кодом создан."
-                ),
-                Toast.LENGTH_LONG
-            ).show()
-        } catch (e: Exception) {
-            Toast.makeText(
-                this,
-                "ZIP error: ${e.message}",
-                Toast.LENGTH_LONG
-            ).show()
-        } finally {
-            pendingZipFiles = emptyList()
-        }
-    }
-}
