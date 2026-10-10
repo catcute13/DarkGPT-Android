@@ -10,11 +10,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.content.Context.INPUT_METHOD_SERVICE
 import android.widget.*
-import android.text.TextUtils
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -49,7 +49,6 @@ class MainActivity : Activity() {
         window.setSoftInputMode(
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         )
-
         window.statusBarColor = bg
         window.navigationBarColor = bg
 
@@ -91,16 +90,17 @@ class MainActivity : Activity() {
             fitsSystemWindows = true
         }
 
-        // Tiêu đề riêng
+        // Tiêu đề
         val title = textView("DarkGPT", 28f, white).apply {
             typeface = Typeface.DEFAULT_BOLD
         }
+
         root.addView(
             title,
             LinearLayout.LayoutParams(-1, -2)
         )
 
-        // Dòng mô tả
+        // Mô tả
         root.addView(
             textView(
                 "AI lập trình game • Hỗ trợ tạo mã nguồn",
@@ -112,19 +112,16 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2)
         )
 
-        // Nút Cài đặt nằm ở hàng RIÊNG bên dưới tiêu đề
+        // Cài đặt nằm ở hàng riêng
         val settingsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val settingsButton = makeButton("⚙ Cài đặt") {
-            showSettings()
-        }
-
         settingsRow.addView(
-            settingsButton,
-            LinearLayout.LayoutParams(-2, -2)
+            makeButton("⚙ Cài đặt") {
+                showSettings()
+            }
         )
 
         root.addView(
@@ -134,7 +131,7 @@ class MainActivity : Activity() {
             }
         )
 
-        // Khu vực hội thoại có thể cuộn
+        // Khu vực chat có thể cuộn
         chatList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(2), dp(4), dp(2), dp(12))
@@ -144,22 +141,20 @@ class MainActivity : Activity() {
             isFillViewport = false
             clipToPadding = false
             setPadding(0, 0, 0, dp(4))
+
+            // Dùng LayoutParams tương thích với ViewGroup
             addView(
                 chatList,
-                ScrollView.LayoutParams(-1, -2)
+                ViewGroup.LayoutParams(-1, -2)
             )
         }
 
         root.addView(
             chatScroll,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
+            LinearLayout.LayoutParams(-1, 0, 1f)
         )
 
-        // Khung nhập luôn ở cuối màn hình
+        // Thanh nhập tin nhắn
         val inputPanel = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -255,16 +250,18 @@ class MainActivity : Activity() {
                 textSize = 14f
                 setPadding(dp(12), dp(10), dp(12), dp(10))
                 setBackgroundColor(panel)
-                singleLine = true
+
+                // Sửa lỗi singleLine
+                isSingleLine = true
 
                 if (isSecret) {
                     inputType =
                         android.text.InputType.TYPE_CLASS_TEXT or
-                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                            android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                 } else {
                     inputType =
                         android.text.InputType.TYPE_CLASS_TEXT or
-                        android.text.InputType.TYPE_TEXT_VARIATION_NORMAL
+                            android.text.InputType.TYPE_TEXT_VARIATION_NORMAL
                 }
             }
 
@@ -301,7 +298,8 @@ class MainActivity : Activity() {
                 val keyValue = key.text.toString().trim()
                 val modelValue = model.text.toString().trim()
 
-                if (baseValue.isBlank() ||
+                if (
+                    baseValue.isBlank() ||
                     keyValue.isBlank() ||
                     modelValue.isBlank()
                 ) {
@@ -356,7 +354,10 @@ class MainActivity : Activity() {
         setContentView(
             ScrollView(this).apply {
                 setBackgroundColor(bg)
-                addView(layout)
+                addView(
+                    layout,
+                    ViewGroup.LayoutParams(-1, -2)
+                )
                 isFillViewport = true
             }
         )
@@ -364,9 +365,12 @@ class MainActivity : Activity() {
 
     private fun hideKeyboard() {
         val view = currentFocus ?: promptOrNull()
+
         if (view != null) {
-            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
-                .hideSoftInputFromWindow(view.windowToken, 0)
+            (
+                getSystemService(INPUT_METHOD_SERVICE)
+                    as InputMethodManager
+            ).hideSoftInputFromWindow(view.windowToken, 0)
         }
     }
 
@@ -374,7 +378,7 @@ class MainActivity : Activity() {
         return if (::prompt.isInitialized) prompt else null
     }
 
-    // Hiển thị tin nhắn và tự tách các khối code Markdown.
+    // Hiển thị một tin nhắn
     private fun addMessage(role: String, content: String) {
         val isUser = role == "Bạn"
 
@@ -382,7 +386,11 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
             setBackgroundColor(
-                if (isUser) Color.rgb(38, 39, 65) else panel
+                if (isUser) {
+                    Color.rgb(38, 39, 65)
+                } else {
+                    panel
+                }
             )
         }
 
@@ -411,7 +419,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderContent(parent: LinearLayout, content: String) {
+    // Tách các khối code Markdown ```...```
+    private fun renderContent(
+        parent: LinearLayout,
+        content: String
+    ) {
         val codePattern = Regex(
             "```([^\\n`]*)\\n([\\s\\S]*?)```"
         )
@@ -419,7 +431,10 @@ class MainActivity : Activity() {
         var cursor = 0
 
         for (match in codePattern.findAll(content)) {
-            val before = content.substring(cursor, match.range.first)
+            val before = content.substring(
+                cursor,
+                match.range.first
+            )
 
             if (before.isNotEmpty()) {
                 addSelectableText(parent, before)
@@ -434,6 +449,7 @@ class MainActivity : Activity() {
         }
 
         val remaining = content.substring(cursor)
+
         if (remaining.isNotEmpty()) {
             addSelectableText(parent, remaining)
         }
@@ -443,7 +459,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // Cho phép nhấn giữ để chọn chữ và dùng menu sao chép của Android.
+    // Văn bản thường: cho phép nhấn giữ để chọn và sao chép
     private fun addSelectableText(
         parent: LinearLayout,
         value: String
@@ -452,11 +468,11 @@ class MainActivity : Activity() {
             this.text = value
             textSize = 15f
             setTextColor(white)
-            setTextIsSelectable(true)
-            setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG)
             setPadding(0, dp(2), 0, dp(4))
-            textIsSelectable = true
             setLineSpacing(dp(2).toFloat(), 1f)
+
+            // API hợp lệ của TextView
+            setTextIsSelectable(true)
         }
 
         parent.addView(
@@ -465,7 +481,7 @@ class MainActivity : Activity() {
         )
     }
 
-    // Khối code có nút sao chép riêng và hỗ trợ chọn văn bản.
+    // Khối code: nút sao chép riêng và cho phép chọn văn bản
     private fun addCodeBlock(
         parent: LinearLayout,
         language: String,
@@ -484,7 +500,8 @@ class MainActivity : Activity() {
 
         toolbar.addView(
             textView(
-                if (language.isBlank()) "CODE" else language.uppercase(),
+                if (language.isBlank()) "CODE"
+                else language.uppercase(),
                 12f,
                 green
             ).apply {
@@ -514,12 +531,11 @@ class MainActivity : Activity() {
             textSize = 13f
             setTextColor(Color.rgb(220, 230, 245))
             typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-            textIsSelectable = true
             setPadding(0, dp(8), 0, dp(4))
             setLineSpacing(dp(2).toFloat(), 1f)
-            setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG)
-            isHorizontalScrollBarEnabled = true
+
+            // Không dùng thuộc tính textIsSelectable trực tiếp
+            setTextIsSelectable(true)
         }
 
         box.addView(
@@ -537,8 +553,9 @@ class MainActivity : Activity() {
     }
 
     private fun copyText(value: String) {
-        val clipboard =
-            getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipboard = getSystemService(
+            Context.CLIPBOARD_SERVICE
+        ) as ClipboardManager
 
         clipboard.setPrimaryClip(
             ClipData.newPlainText("DarkGPT", value)
@@ -561,12 +578,17 @@ class MainActivity : Activity() {
         val key = prefs.getString("key", "") ?: ""
         val model = prefs.getString("model", "") ?: ""
 
-        if (base.isBlank() || key.isBlank() || model.isBlank()) {
+        if (
+            base.isBlank() ||
+            key.isBlank() ||
+            model.isBlank()
+        ) {
             Toast.makeText(
                 this,
                 "Hãy cài đặt API trước",
                 Toast.LENGTH_LONG
             ).show()
+
             showSettings()
             return
         }
@@ -597,13 +619,15 @@ class MainActivity : Activity() {
         thread {
             val answer = try {
                 val cleanBase = base.trimEnd('/')
-                val url = URL("$cleanBase/chat/completions")
-
-                val conn = (url.openConnection() as HttpURLConnection).apply {
+                val conn = (
+                    URL("$cleanBase/chat/completions")
+                        .openConnection() as HttpURLConnection
+                ).apply {
                     requestMethod = "POST"
                     connectTimeout = 20000
                     readTimeout = 90000
                     doOutput = true
+
                     setRequestProperty(
                         "Content-Type",
                         "application/json; charset=UTF-8"
@@ -645,6 +669,7 @@ class MainActivity : Activity() {
                     }
 
                     val responseCode = conn.responseCode
+
                     val stream = if (responseCode in 200..299) {
                         conn.inputStream
                     } else {
@@ -663,7 +688,10 @@ class MainActivity : Activity() {
                         .getJSONArray("choices")
                         .getJSONObject(0)
                         .getJSONObject("message")
-                        .optString("content", "AI không trả lời.")
+                        .optString(
+                            "content",
+                            "AI không trả lời."
+                        )
                 } finally {
                     conn.disconnect()
                 }
@@ -674,6 +702,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 for (i in chatList.childCount - 1 downTo 0) {
                     val child = chatList.getChildAt(i)
+
                     if (child.tag == "loading") {
                         chatList.removeViewAt(i)
                     }
