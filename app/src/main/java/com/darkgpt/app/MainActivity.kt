@@ -2,12 +2,16 @@
 package com.darkgpt.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Bundle
 import android.graphics.Color
 import android.graphics.Typeface
 import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +23,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
@@ -35,13 +42,40 @@ class MainActivity : Activity() {
     private val muted = Color.rgb(175, 181, 198)
     private val green = Color.rgb(100, 230, 160)
 
-    private lateinit var root: LinearLayout
     private lateinit var chatList: LinearLayout
     private lateinit var chatScroll: ScrollView
     private lateinit var prompt: EditText
     private lateinit var sendButton: Button
 
     private var sending = false
+    private var currentChatId = ""
+    private var attachedText = ""
+    private var pendingZipFiles: List<Pair<String, String>> = emptyList()
+
+    data class Message(
+        val role: String,
+        val content: String
+    )
+
+    data class Chat(
+        val id: String,
+        var title: String,
+        var favorite: Boolean,
+        val messages: MutableList<Message>
+    )
+
+    private val chats = mutableListOf<Chat>()
+
+    private fun language(): String =
+        prefs.getString("language", "vi") ?: "vi"
+
+    private fun tr(vi: String, en: String, ru: String): String {
+        return when (language()) {
+            "en" -> en
+            "ru" -> ru
+            else -> vi
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +86,16 @@ class MainActivity : Activity() {
         window.statusBarColor = bg
         window.navigationBarColor = bg
 
+        loadChats()
+
+        if (chats.isEmpty()) {
+            createChat(false)
+        }
+
+        if (chats.none { it.id == currentChatId }) {
+            currentChatId = chats.first().id
+        }
+
         showMain()
     }
 
@@ -60,12 +104,12 @@ class MainActivity : Activity() {
     }
 
     private fun textView(
-        textValue: String,
+        value: String,
         size: Float,
         color: Int
     ): TextView {
         return TextView(this).apply {
-            text = textValue
+            text = value
             textSize = size
             setTextColor(color)
         }
@@ -73,76 +117,195 @@ class MainActivity : Activity() {
 
     private fun makeButton(
         label: String,
-        onClick: () -> Unit
+        action: () -> Unit
     ): Button {
         return Button(this).apply {
             text = label
             isAllCaps = false
-            setOnClickListener { onClick() }
+            setOnClickListener { action() }
         }
     }
 
-    private fun showMain() {
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(8))
-            setBackgroundColor(bg)
-            fitsSystemWindows = true
+    private fun currentChat(): Chat? {
+        return chats.firstOrNull { it.id == currentChatId }
+    }
+
+    // -----------------------------
+    // LƯU VÀ KHÔI PHỤC LỊCH SỬ CHAT
+    // -----------------------------
+
+    private fun loadChats() {
+        chats.clear()
+
+        try {
+            val array = JSONArray(
+                prefs.getString("chat_history", "[]") ?: "[]"
+            )
+
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val messages = mutableListOf<Message>()
+                val messageArray = obj.optJSONArray("messages")
+                    ?: JSONArray()
+
+                for (j in 0 until messageArray.length()) {
+                    val message = messageArray.getJSONObject(j)
+
+                    messages.add(
+                        Message(
+                            message.optString("role"),
+                            message.optString("content")
+                        )
+                    )
+                }
+
+                chats.add(
+                    Chat(
+                        obj.optString(
+                            "id",
+                            UUID.randomUUID().toString()
+                        ),
+                        obj.optString(
+                            "title",
+                            tr("Chat mới", "New chat", "Новый чат")
+                        ),
+                        obj.optBoolean("favorite", false),
+                        messages
+                    )
+                )
+            }
+
+            currentChatId =
+                prefs.getString("current_chat", "") ?: ""
+
+        } catch (_: Exception) {
+            chats.clear()
+        }
+    }
+
+    private fun saveChats() {
+        val array = JSONArray()
+
+        chats.forEach { chat ->
+            val messages = JSONArray()
+
+            chat.messages.forEach { message ->
+                messages.put(
+                    JSONObject()
+                        .put("role", message.role)
+                        .put("content", message.content)
+                )
+            }
+
+            array.put(
+                JSONObject()
+                    .put("id", chat.id)
+                    .put("title", chat.title)
+                    .put("favorite", chat.favorite)
+                    .put("messages", messages)
+            )
         }
 
-        // Tiêu đề
-        val title = textView("DarkGPT", 28f, white).apply {
-            typeface = Typeface.DEFAULT_BOLD
+        prefs.edit()
+            .putString("chat_history", array.toString())
+            .putString("current_chat", currentChatId)
+            .apply()
+    }
+
+    private fun createChat(show: Boolean = true) {
+        val chat = Chat(
+            UUID.randomUUID().toString(),
+            tr("Cuộc trò chuyện mới", "New conversation", "Новый разговор"),
+            false,
+            mutableListOf()
+        )
+
+        chats.add(0, chat)
+        currentChatId = chat.id
+        saveChats()
+
+        if (show) showMain()
+    }
+
+    // -----------------------------
+    // GIAO DIỆN CHAT
+    // -----------------------------
+
+    private fun showMain() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setBackgroundColor(bg)
         }
 
         root.addView(
-            title,
-            LinearLayout.LayoutParams(-1, -2)
+            textView("DarkGPT", 27f, white).apply {
+                typeface = Typeface.DEFAULT_BOLD
+            }
         )
 
-        // Mô tả
         root.addView(
             textView(
-                "AI lập trình game • Hỗ trợ tạo mã nguồn",
-                13f,
+                tr(
+                    "AI lập trình game • Mã nguồn",
+                    "Game coding AI • Source code",
+                    "ИИ для игр • Исходный код"
+                ),
+                12f,
                 muted
-            ).apply {
-                setPadding(0, dp(4), 0, dp(10))
-            },
-            LinearLayout.LayoutParams(-1, -2)
+            )
         )
 
-        // Cài đặt nằm ở hàng riêng
-        val settingsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val topRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        settingsRow.addView(
-            makeButton("⚙ Cài đặt") {
+        topRow.addView(
+            makeButton(tr("＋ Chat mới", "＋ New chat", "＋ Новый чат")) {
+                createChat()
+            }
+        )
+
+        topRow.addView(
+            makeButton(tr("☰ Lịch sử", "☰ History", "☰ История")) {
+                showHistory()
+            }
+        )
+
+        topRow.addView(
+            makeButton(tr("⚙ Cài đặt", "⚙ Settings", "⚙ Настройки")) {
                 showSettings()
             }
         )
 
-        root.addView(
-            settingsRow,
-            LinearLayout.LayoutParams(-1, -2).apply {
-                bottomMargin = dp(8)
+        root.addView(topRow)
+
+        val fileRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        fileRow.addView(
+            makeButton(tr("📎 Chọn tệp", "📎 Attach file", "📎 Файл")) {
+                chooseFile()
             }
         )
 
-        // Khu vực chat có thể cuộn
+        fileRow.addView(
+            makeButton(tr("Tạo ZIP code", "Export code ZIP", "ZIP с кодом")) {
+                exportZip()
+            }
+        )
+
+        root.addView(fileRow)
+
         chatList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(2), dp(4), dp(2), dp(12))
+            setPadding(dp(2), dp(6), dp(2), dp(12))
         }
 
         chatScroll = ScrollView(this).apply {
             isFillViewport = false
             clipToPadding = false
-            setPadding(0, 0, 0, dp(4))
-
-            // Dùng LayoutParams tương thích với ViewGroup
             addView(
                 chatList,
                 ViewGroup.LayoutParams(-1, -2)
@@ -154,19 +317,21 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, 0, 1f)
         )
 
-        // Thanh nhập tin nhắn
-        val inputPanel = LinearLayout(this).apply {
+        val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8), 0, 0)
         }
 
         prompt = EditText(this).apply {
-            hint = "Nhập yêu cầu..."
+            hint = tr(
+                "Nhập yêu cầu...",
+                "Type a request...",
+                "Введите запрос..."
+            )
             setTextColor(white)
             setHintTextColor(muted)
             textSize = 15f
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             setBackgroundColor(panel)
             minLines = 1
             maxLines = 4
@@ -174,38 +339,231 @@ class MainActivity : Activity() {
             isSingleLine = false
         }
 
-        inputPanel.addView(
+        inputRow.addView(
             prompt,
             LinearLayout.LayoutParams(0, -2, 1f).apply {
-                marginEnd = dp(8)
+                marginEnd = dp(6)
             }
         )
 
-        sendButton = makeButton("Gửi") {
+        sendButton = makeButton(
+            tr("Gửi", "Send", "Отправить")
+        ) {
             sendPrompt()
         }.apply {
             setBackgroundColor(purple)
             setTextColor(white)
         }
 
-        inputPanel.addView(
-            sendButton,
-            LinearLayout.LayoutParams(-2, -2)
-        )
+        inputRow.addView(sendButton)
 
         root.addView(
-            inputPanel,
-            LinearLayout.LayoutParams(-1, -2)
+            inputRow,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(6)
+            }
         )
 
         setContentView(root)
-
-        addMessage(
-            "DarkGPT",
-            "Xin chào! Đây là DarkGPT.\n" +
-                "Mở Cài đặt để kết nối dịch vụ AI, sau đó nhập yêu cầu của bạn."
-        )
+        renderCurrentChat()
     }
+
+    private fun renderCurrentChat() {
+        chatList.removeAllViews()
+
+        val chat = currentChat() ?: return
+
+        if (chat.messages.isEmpty()) {
+            addMessageView(
+                chatList,
+                "DarkGPT",
+                tr(
+                    "Xin chào! Mở Cài đặt để kết nối API AI. " +
+                        "Lịch sử trò chuyện được lưu trên thiết bị.",
+                    "Hello! Open Settings to connect an AI API. " +
+                        "Chat history is saved on this device.",
+                    "Привет! Откройте настройки для подключения API. " +
+                        "История чатов сохраняется на устройстве."
+                )
+            )
+        } else {
+            chat.messages.forEach {
+                addMessageView(chatList, it.role, it.content)
+            }
+        }
+
+        chatScroll.post {
+            chatScroll.fullScroll(View.FOCUS_DOWN)
+        }
+    }
+
+    // -----------------------------
+    // DANH SÁCH CHAT
+    // -----------------------------
+
+    private fun showHistory() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(bg)
+        }
+
+        layout.addView(
+            textView(
+                tr("Lịch sử chat", "Chat history", "История чатов"),
+                24f,
+                white
+            ).apply {
+                typeface = Typeface.DEFAULT_BOLD
+            }
+        )
+
+        layout.addView(
+            makeButton(tr("＋ Chat mới", "＋ New chat", "＋ Новый чат")) {
+                createChat()
+            }
+        )
+
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val scroll = ScrollView(this)
+        scroll.addView(list)
+
+        chats.sortedByDescending { it.favorite }.forEach { chat ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                setBackgroundColor(panel)
+            }
+
+            item.addView(
+                makeButton(
+                    (if (chat.favorite) "★ " else "") + chat.title
+                ) {
+                    currentChatId = chat.id
+                    saveChats()
+                    showMain()
+                }
+            )
+
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+
+            actions.addView(
+                makeButton(
+                    if (chat.favorite)
+                        tr("Bỏ ưu tiên", "Unfavorite", "Убрать ★")
+                    else
+                        tr("★ Ưu tiên", "★ Favorite", "★ В избранное")
+                ) {
+                    chat.favorite = !chat.favorite
+                    saveChats()
+                    showHistory()
+                }
+            )
+
+            actions.addView(
+                makeButton(tr("Đổi tên", "Rename", "Переименовать")) {
+                    val input = EditText(this@MainActivity)
+                    input.setText(chat.title)
+
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(
+                            tr("Tên cuộc trò chuyện", "Chat name", "Название чата")
+                        )
+                        .setView(input)
+                        .setPositiveButton("OK") { _, _ ->
+                            val name = input.text.toString().trim()
+
+                            if (name.isNotEmpty()) {
+                                chat.title = name
+                                saveChats()
+                                showHistory()
+                            }
+                        }
+                        .setNegativeButton(
+                            tr("Hủy", "Cancel", "Отмена"),
+                            null
+                        )
+                        .show()
+                }
+            )
+
+            actions.addView(
+                makeButton(tr("Xóa", "Delete", "Удалить")) {
+                    if (chat.favorite) {
+                        Toast.makeText(
+                            this,
+                            tr(
+                                "Chat ưu tiên được bảo vệ. Hãy bỏ ưu tiên trước.",
+                                "Favorite chats are protected. Unfavorite first.",
+                                "Избранные чаты защищены. Сначала уберите ★."
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setMessage(
+                                tr(
+                                    "Xóa cuộc trò chuyện này?",
+                                    "Delete this conversation?",
+                                    "Удалить этот разговор?"
+                                )
+                            )
+                            .setNegativeButton(
+                                tr("Hủy", "Cancel", "Отмена"),
+                                null
+                            )
+                            .setPositiveButton(
+                                tr("Xóa", "Delete", "Удалить")
+                            ) { _, _ ->
+                                chats.remove(chat)
+
+                                if (currentChatId == chat.id) {
+                                    if (chats.isEmpty()) {
+                                        createChat(false)
+                                    }
+                                    currentChatId = chats.first().id
+                                }
+
+                                saveChats()
+                                showHistory()
+                            }
+                            .show()
+                    }
+                }
+            )
+
+            item.addView(actions)
+
+            list.addView(
+                item,
+                LinearLayout.LayoutParams(-1, -2).apply {
+                    bottomMargin = dp(8)
+                }
+            )
+        }
+
+        layout.addView(
+            scroll,
+            LinearLayout.LayoutParams(-1, 0, 1f)
+        )
+
+        layout.addView(
+            makeButton(tr("Quay lại", "Back", "Назад")) {
+                showMain()
+            }
+        )
+
+        setContentView(layout)
+    }
+
+    // -----------------------------
+    // CÀI ĐẶT API VÀ NGÔN NGỮ
+    // -----------------------------
 
     private fun showSettings() {
         val layout = LinearLayout(this).apply {
@@ -215,26 +573,32 @@ class MainActivity : Activity() {
         }
 
         layout.addView(
-            textView("Cài đặt API", 25f, white).apply {
+            textView(
+                tr("Cài đặt", "Settings", "Настройки"),
+                25f,
+                white
+            ).apply {
                 typeface = Typeface.DEFAULT_BOLD
             }
         )
 
         layout.addView(
             textView(
-                "Nhập thông tin dịch vụ AI tương thích với API chat completions.",
+                tr(
+                    "API tương thích với Chat Completions",
+                    "Chat Completions compatible API",
+                    "API, совместимый с Chat Completions"
+                ),
                 13f,
                 muted
-            ).apply {
-                setPadding(0, dp(6), 0, dp(12))
-            }
+            )
         )
 
         fun addField(
             label: String,
-            hintText: String,
+            hint: String,
             keyName: String,
-            isSecret: Boolean = false
+            secret: Boolean = false
         ): EditText {
             layout.addView(
                 textView(label, 14f, white).apply {
@@ -243,25 +607,20 @@ class MainActivity : Activity() {
             )
 
             val field = EditText(this).apply {
-                hint = hintText
+                this.hint = hint
                 setText(prefs.getString(keyName, "") ?: "")
                 setTextColor(white)
                 setHintTextColor(muted)
-                textSize = 14f
                 setPadding(dp(12), dp(10), dp(12), dp(10))
                 setBackgroundColor(panel)
-
-                // Sửa lỗi singleLine
                 isSingleLine = true
 
-                if (isSecret) {
-                    inputType =
-                        android.text.InputType.TYPE_CLASS_TEXT or
-                            android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                inputType = if (secret) {
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                 } else {
-                    inputType =
-                        android.text.InputType.TYPE_CLASS_TEXT or
-                            android.text.InputType.TYPE_TEXT_VARIATION_NORMAL
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_NORMAL
                 }
             }
 
@@ -281,37 +640,64 @@ class MainActivity : Activity() {
 
         val key = addField(
             "API Key",
-            "Nhập API key của bạn",
+            "API key",
             "key",
             true
         )
 
         val model = addField(
             "Model",
-            "Tên model được hỗ trợ",
+            "Model name",
             "model"
         )
 
         layout.addView(
-            makeButton("Lưu cài đặt") {
-                val baseValue = base.text.toString().trim().trimEnd('/')
-                val keyValue = key.text.toString().trim()
-                val modelValue = model.text.toString().trim()
+            textView(
+                tr("Ngôn ngữ", "Language", "Язык"),
+                14f,
+                white
+            ).apply {
+                setPadding(0, dp(12), 0, dp(4))
+            }
+        )
 
-                if (
-                    baseValue.isBlank() ||
-                    keyValue.isBlank() ||
-                    modelValue.isBlank()
-                ) {
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            listOf("Tiếng Việt", "English", "Русский")
+        )
+
+        spinner.setSelection(
+            when (language()) {
+                "en" -> 1
+                "ru" -> 2
+                else -> 0
+            }
+        )
+
+        layout.addView(spinner)
+
+        layout.addView(
+            makeButton(tr("Lưu cài đặt", "Save settings", "Сохранить")) {
+                val b = base.text.toString().trim().trimEnd('/')
+                val k = key.text.toString().trim()
+                val m = model.text.toString().trim()
+
+                if (b.isBlank() || k.isBlank() || m.isBlank()) {
                     Toast.makeText(
                         this,
-                        "Hãy điền đủ Base URL, API Key và Model",
+                        tr(
+                            "Hãy điền đủ Base URL, API Key và Model",
+                            "Fill in Base URL, API Key and Model",
+                            "Заполните Base URL, API Key и Model"
+                        ),
                         Toast.LENGTH_LONG
                     ).show()
                     return@makeButton
                 }
 
-                if (!baseValue.startsWith("https://")) {
+                if (!b.startsWith("https://")) {
                     Toast.makeText(
                         this,
                         "Base URL cần bắt đầu bằng https://",
@@ -320,10 +706,17 @@ class MainActivity : Activity() {
                     return@makeButton
                 }
 
+                val selectedLanguage = when (spinner.selectedItemPosition) {
+                    1 -> "en"
+                    2 -> "ru"
+                    else -> "vi"
+                }
+
                 prefs.edit()
-                    .putString("base", baseValue)
-                    .putString("key", keyValue)
-                    .putString("model", modelValue)
+                    .putString("base", b)
+                    .putString("key", k)
+                    .putString("model", m)
+                    .putString("language", selectedLanguage)
                     .apply()
 
                 hideKeyboard()
@@ -331,24 +724,20 @@ class MainActivity : Activity() {
 
                 Toast.makeText(
                     this,
-                    "Đã lưu cài đặt",
+                    tr("Đã lưu", "Saved", "Сохранено"),
                     Toast.LENGTH_SHORT
                 ).show()
             }.apply {
                 setBackgroundColor(purple)
                 setTextColor(white)
-            },
-            LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = dp(16)
             }
         )
 
         layout.addView(
-            makeButton("Quay lại") {
+            makeButton(tr("Quay lại", "Back", "Назад")) {
                 hideKeyboard()
                 showMain()
-            },
-            LinearLayout.LayoutParams(-1, -2)
+            }
         )
 
         setContentView(
@@ -364,7 +753,7 @@ class MainActivity : Activity() {
     }
 
     private fun hideKeyboard() {
-        val view = currentFocus ?: promptOrNull()
+        val view = currentFocus
 
         if (view != null) {
             (
@@ -374,218 +763,150 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun promptOrNull(): View? {
-        return if (::prompt.isInitialized) prompt else null
+    // -----------------------------
+    // CHỌN TỆP VĂN BẢN / MÃ NGUỒN
+    // -----------------------------
+
+    private fun chooseFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+
+        startActivityForResult(intent, 501)
     }
 
-    // Hiển thị một tin nhắn
-    private fun addMessage(role: String, content: String) {
-        val isUser = role == "Bạn"
+    @Deprecated("Uses startActivityForResult for compatibility")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
 
-        val bubble = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setBackgroundColor(
-                if (isUser) {
-                    Color.rgb(38, 39, 65)
-                } else {
-                    panel
+        if (resultCode != RESULT_OK || data?.data == null) return
+
+        val uri = data.data!!
+
+        if (requestCode == 502) {
+            writeZip(uri)
+            return
+        }
+
+        if (requestCode == 501) {
+            readTextFile(uri)
+        }
+    }
+
+    private fun readTextFile(uri: Uri) {
+        thread {
+            try {
+                val name = queryName(uri) ?: "attachment.txt"
+                val mime = contentResolver.getType(uri) ?: ""
+
+                val supported =
+                    mime.startsWith("text/") ||
+                    listOf(
+                        ".kt", ".java", ".json", ".xml", ".md",
+                        ".txt", ".gradle", ".kts", ".yml", ".yaml",
+                        ".py", ".js", ".html", ".css", ".properties"
+                    ).any { name.endsWith(it, true) }
+
+                if (!supported) {
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            tr(
+                                "Bản này đọc tệp văn bản/code. PDF, ảnh và ZIP chưa được phân tích.",
+                                "This version reads text/code files. PDF, images and ZIP are not parsed.",
+                                "Эта версия читает текст и код. PDF, изображения и ZIP не анализируются."
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@thread
                 }
-            )
-        }
 
-        bubble.addView(
-            textView(
-                role,
-                13f,
-                if (isUser) Color.rgb(190, 180, 255) else green
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-                setPadding(0, 0, 0, dp(6))
+                val content = contentResolver
+                    .openInputStream(uri)
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    ?: throw Exception("Không đọc được tệp")
+
+                if (content.length > 120000) {
+                    throw Exception("Tệp vượt giới hạn 120.000 ký tự")
+                }
+
+                attachedText += "\n\n[FILE: $name]\n$content\n[END FILE]"
+
+                runOnUiThread {
+                    if (::prompt.isInitialized) {
+                        prompt.append("\n[Đã đính kèm: $name]")
+                    }
+
+                    Toast.makeText(
+                        this,
+                        tr(
+                            "Đã đọc tệp. Nội dung sẽ gửi cùng câu hỏi kế tiếp.",
+                            "File read. Its contents will be sent with your next prompt.",
+                            "Файл прочитан и будет отправлен со следующим запросом."
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Lỗi đọc tệp: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
-        )
-
-        renderContent(bubble, content)
-
-        chatList.addView(
-            bubble,
-            LinearLayout.LayoutParams(-1, -2).apply {
-                bottomMargin = dp(12)
-            }
-        )
-
-        chatScroll.post {
-            chatScroll.fullScroll(View.FOCUS_DOWN)
         }
     }
 
-    // Tách các khối code Markdown ```...```
-    private fun renderContent(
-        parent: LinearLayout,
-        content: String
-    ) {
-        val codePattern = Regex(
-            "```([^\\n`]*)\\n([\\s\\S]*?)```"
-        )
-
-        var cursor = 0
-
-        for (match in codePattern.findAll(content)) {
-            val before = content.substring(
-                cursor,
-                match.range.first
-            )
-
-            if (before.isNotEmpty()) {
-                addSelectableText(parent, before)
+    private fun queryName(uri: Uri): String? {
+        return try {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use {
+                if (it.moveToFirst()) it.getString(0) else null
             }
-
-            val language = match.groupValues[1].trim()
-            val code = match.groupValues[2].trimEnd('\n', '\r')
-
-            addCodeBlock(parent, language, code)
-
-            cursor = match.range.last + 1
-        }
-
-        val remaining = content.substring(cursor)
-
-        if (remaining.isNotEmpty()) {
-            addSelectableText(parent, remaining)
-        }
-
-        if (content.isEmpty()) {
-            addSelectableText(parent, "")
+        } catch (_: Exception) {
+            null
         }
     }
 
-    // Văn bản thường: cho phép nhấn giữ để chọn và sao chép
-    private fun addSelectableText(
-        parent: LinearLayout,
-        value: String
-    ) {
-        val text = TextView(this).apply {
-            this.text = value
-            textSize = 15f
-            setTextColor(white)
-            setPadding(0, dp(2), 0, dp(4))
-            setLineSpacing(dp(2).toFloat(), 1f)
-
-            // API hợp lệ của TextView
-            setTextIsSelectable(true)
-        }
-
-        parent.addView(
-            text,
-            LinearLayout.LayoutParams(-1, -2)
-        )
-    }
-
-    // Khối code: nút sao chép riêng và cho phép chọn văn bản
-    private fun addCodeBlock(
-        parent: LinearLayout,
-        language: String,
-        code: String
-    ) {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            setBackgroundColor(codeBg)
-        }
-
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        toolbar.addView(
-            textView(
-                if (language.isBlank()) "CODE"
-                else language.uppercase(),
-                12f,
-                green
-            ).apply {
-                typeface = Typeface.DEFAULT_BOLD
-            },
-            LinearLayout.LayoutParams(0, -2, 1f)
-        )
-
-        toolbar.addView(
-            makeButton("Sao chép") {
-                copyText(code)
-            }.apply {
-                textSize = 12f
-                minHeight = dp(36)
-                minWidth = dp(72)
-                setPadding(dp(6), 0, dp(6), 0)
-            }
-        )
-
-        box.addView(
-            toolbar,
-            LinearLayout.LayoutParams(-1, -2)
-        )
-
-        val codeText = TextView(this).apply {
-            text = code
-            textSize = 13f
-            setTextColor(Color.rgb(220, 230, 245))
-            typeface = Typeface.MONOSPACE
-            setPadding(0, dp(8), 0, dp(4))
-            setLineSpacing(dp(2).toFloat(), 1f)
-
-            // Không dùng thuộc tính textIsSelectable trực tiếp
-            setTextIsSelectable(true)
-        }
-
-        box.addView(
-            codeText,
-            LinearLayout.LayoutParams(-1, -2)
-        )
-
-        parent.addView(
-            box,
-            LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = dp(6)
-                bottomMargin = dp(8)
-            }
-        )
-    }
-
-    private fun copyText(value: String) {
-        val clipboard = getSystemService(
-            Context.CLIPBOARD_SERVICE
-        ) as ClipboardManager
-
-        clipboard.setPrimaryClip(
-            ClipData.newPlainText("DarkGPT", value)
-        )
-
-        Toast.makeText(
-            this,
-            "Đã sao chép",
-            Toast.LENGTH_SHORT
-        ).show()
-    }
+    // -----------------------------
+    // GỬI TIN NHẮN VÀ GỬI NGỮ CẢNH CHAT
+    // -----------------------------
 
     private fun sendPrompt() {
         if (sending) return
 
-        val question = prompt.text.toString().trim()
-        if (question.isEmpty()) return
+        val typed = prompt.text.toString().trim()
+
+        if (typed.isEmpty() && attachedText.isBlank()) return
+
+        val question = (typed + attachedText).trim()
 
         val base = prefs.getString("base", "") ?: ""
         val key = prefs.getString("key", "") ?: ""
         val model = prefs.getString("model", "") ?: ""
 
-        if (
-            base.isBlank() ||
-            key.isBlank() ||
-            model.isBlank()
-        ) {
+        if (base.isBlank() || key.isBlank() || model.isBlank()) {
             Toast.makeText(
                 this,
-                "Hãy cài đặt API trước",
+                tr(
+                    "Hãy cài đặt API trước",
+                    "Configure the API first",
+                    "Сначала настройте API"
+                ),
                 Toast.LENGTH_LONG
             ).show()
 
@@ -593,8 +914,24 @@ class MainActivity : Activity() {
             return
         }
 
-        addMessage("Bạn", question)
-        prompt.setText("")
+        attachedText = ""
+
+        val chat = currentChat() ?: run {
+            createChat(false)
+            currentChat()!!
+        }
+
+        chat.messages.add(Message("Bạn", question))
+
+        if (chat.messages.count { it.role == "Bạn" } == 1) {
+            chat.title = typed.take(36).ifBlank {
+                tr("Tệp đính kèm", "Attachment", "Вложение")
+            }
+        }
+
+        saveChats()
+        renderCurrentChat()
+        prompt.setText()
         hideKeyboard()
 
         sending = true
@@ -602,7 +939,11 @@ class MainActivity : Activity() {
         sendButton.text = "..."
 
         val loading = textView(
-            "DarkGPT đang xử lý...",
+            tr(
+                "DarkGPT đang xử lý...",
+                "DarkGPT is thinking...",
+                "DarkGPT думает..."
+            ),
             14f,
             muted
         ).apply {
@@ -612,15 +953,13 @@ class MainActivity : Activity() {
 
         chatList.addView(loading)
 
-        chatScroll.post {
-            chatScroll.fullScroll(View.FOCUS_DOWN)
-        }
+        val chatId = currentChatId
+        val history = chat.messages.toList()
 
         thread {
             val answer = try {
-                val cleanBase = base.trimEnd('/')
-                val conn = (
-                    URL("$cleanBase/chat/completions")
+                val connection = (
+                    URL(base.trimEnd('/') + "/chat/completions")
                         .openConnection() as HttpURLConnection
                 ).apply {
                     requestMethod = "POST"
@@ -640,80 +979,368 @@ class MainActivity : Activity() {
 
                 try {
                     val messages = JSONArray()
-                        .put(
+
+                    messages.put(
+                        JSONObject()
+                            .put("role", "system")
+                            .put(
+                                "content",
+                                "Bạn là DarkGPT, trợ lý lập trình game. " +
+                                    "Hãy trả lời hữu ích, giải thích lỗi và hỗ trợ " +
+                                    "mã nguồn. Khi trả về nhiều tệp, đặt mỗi tệp " +
+                                    "trong một khối code riêng và ghi filename: " +
+                                    "TênTệp.ext trong dòng mở đầu của khối code."
+                            )
+                    )
+
+                    history.takeLast(30).forEach { message ->
+                        val role = if (message.role == "Bạn") {
+                            "user"
+                        } else {
+                            "assistant"
+                        }
+
+                        messages.put(
                             JSONObject()
-                                .put("role", "system")
-                                .put(
-                                    "content",
-                                    "Bạn là DarkGPT, trợ lý lập trình game. " +
-                                        "Hỗ trợ dự án riêng, mod hợp pháp, mã nguồn " +
-                                        "và giải thích lỗi. Không hỗ trợ đánh cắp " +
-                                        "tài khoản, malware hoặc né anti-cheat."
-                                )
+                                .put("role", role)
+                                .put("content", message.content)
                         )
-                        .put(
-                            JSONObject()
-                                .put("role", "user")
-                                .put("content", question)
-                        )
+                    }
 
                     val body = JSONObject()
                         .put("model", model)
                         .put("messages", messages)
                         .put("stream", false)
 
-                    conn.outputStream.use { stream ->
-                        stream.write(
-                            body.toString().toByteArray(Charsets.UTF_8)
-                        )
+                    connection.outputStream.use {
+                        it.write(body.toString().toByteArray(Charsets.UTF_8))
                     }
 
-                    val responseCode = conn.responseCode
+                    val status = connection.responseCode
 
-                    val stream = if (responseCode in 200..299) {
-                        conn.inputStream
+                    val responseStream = if (status in 200..299) {
+                        connection.inputStream
                     } else {
-                        conn.errorStream
+                        connection.errorStream
                     }
 
-                    val raw = stream?.bufferedReader()?.use {
+                    val raw = responseStream?.bufferedReader()?.use {
                         it.readText()
                     } ?: ""
 
-                    if (responseCode !in 200..299) {
-                        throw Exception("HTTP $responseCode: $raw")
+                    if (status !in 200..299) {
+                        throw Exception("HTTP $status: $raw")
                     }
 
                     JSONObject(raw)
                         .getJSONArray("choices")
                         .getJSONObject(0)
                         .getJSONObject("message")
-                        .optString(
-                            "content",
-                            "AI không trả lời."
-                        )
+                        .optString("content", "AI không trả lời.")
                 } finally {
-                    conn.disconnect()
+                    connection.disconnect()
                 }
             } catch (e: Exception) {
                 "Lỗi kết nối: ${e.message ?: "Không xác định"}"
             }
 
             runOnUiThread {
-                for (i in chatList.childCount - 1 downTo 0) {
-                    val child = chatList.getChildAt(i)
+                chats.firstOrNull { it.id == chatId }
+                    ?.messages
+                    ?.add(Message("DarkGPT", answer))
 
-                    if (child.tag == "loading") {
-                        chatList.removeViewAt(i)
-                    }
+                saveChats()
+
+                if (currentChatId == chatId) {
+                    renderCurrentChat()
                 }
 
-                addMessage("DarkGPT", answer)
-
                 sending = false
-                sendButton.isEnabled = true
-                sendButton.text = "Gửi"
+
+                if (::sendButton.isInitialized) {
+                    sendButton.isEnabled = true
+                    sendButton.text = tr("Gửi", "Send", "Отправить")
+                }
             }
+        }
+    }
+
+    // -----------------------------
+    // HIỂN THỊ TIN NHẮN VÀ CODE
+    // -----------------------------
+
+    private fun addMessageView(
+        parent: LinearLayout,
+        role: String,
+        content: String
+    ) {
+        val isUser = role == "Bạn"
+
+        val bubble = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setBackgroundColor(
+                if (isUser) Color.rgb(38, 39, 65) else panel
+            )
+        }
+
+        bubble.addView(
+            textView(
+                role,
+                13f,
+                if (isUser) Color.rgb(190, 180, 255) else green
+            ).apply {
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, dp(6))
+            }
+        )
+
+        renderContent(bubble, content)
+
+        parent.addView(
+            bubble,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                bottomMargin = dp(10)
+            }
+        )
+    }
+
+    private fun renderContent(
+        parent: LinearLayout,
+        content: String
+    ) {
+        val pattern = Regex("```([^\\n`]*)\\n([\\s\\S]*?)```")
+        var cursor = 0
+
+        pattern.findAll(content).forEach { match ->
+            val before = content.substring(cursor, match.range.first)
+
+            if (before.isNotEmpty()) {
+                addSelectableText(parent, before)
+            }
+
+            addCodeBlock(
+                parent,
+                match.groupValues[1].trim(),
+                match.groupValues[2].trimEnd('\n', '\r')
+            )
+
+            cursor = match.range.last + 1
+        }
+
+        val remaining = content.substring(cursor)
+
+        if (remaining.isNotEmpty() || content.isEmpty()) {
+            addSelectableText(parent, remaining)
+        }
+    }
+
+    private fun addSelectableText(
+        parent: LinearLayout,
+        value: String
+    ) {
+        parent.addView(
+            TextView(this).apply {
+                text = value
+                textSize = 15f
+                setTextColor(white)
+                setPadding(0, dp(2), 0, dp(4))
+                setLineSpacing(dp(2).toFloat(), 1f)
+                setTextIsSelectable(true)
+            },
+            LinearLayout.LayoutParams(-1, -2)
+        )
+    }
+
+    private fun addCodeBlock(
+        parent: LinearLayout,
+        language: String,
+        code: String
+    ) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setBackgroundColor(codeBg)
+        }
+
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        toolbar.addView(
+            textView(
+                if (language.isBlank()) "CODE" else language.uppercase(),
+                12f,
+                green
+            ).apply {
+                typeface = Typeface.DEFAULT_BOLD
+            },
+            LinearLayout.LayoutParams(0, -2, 1f)
+        )
+
+        toolbar.addView(
+            makeButton(tr("Sao chép", "Copy", "Копировать")) {
+                copyText(code)
+            }.apply {
+                textSize = 12f
+                minHeight = dp(36)
+            }
+        )
+
+        box.addView(toolbar)
+
+        box.addView(
+            TextView(this).apply {
+                text = code
+                textSize = 13f
+                setTextColor(Color.rgb(220, 230, 245))
+                typeface = Typeface.MONOSPACE
+                setPadding(0, dp(8), 0, dp(4))
+                setTextIsSelectable(true)
+            }
+        )
+
+        parent.addView(
+            box,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(5)
+                bottomMargin = dp(7)
+            }
+        )
+    }
+
+    private fun copyText(value: String) {
+        val clipboard = getSystemService(
+            Context.CLIPBOARD_SERVICE
+        ) as ClipboardManager
+
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText("DarkGPT", value)
+        )
+
+        Toast.makeText(
+            this,
+            tr("Đã sao chép", "Copied", "Скопировано"),
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    // -----------------------------
+    // XUẤT ZIP CHỨA CÁC KHỐI CODE
+    // -----------------------------
+
+    private fun exportZip() {
+        val answer = currentChat()
+            ?.messages
+            ?.lastOrNull { it.role == "DarkGPT" }
+            ?.content
+
+        if (answer.isNullOrBlank()) {
+            Toast.makeText(
+                this,
+                tr(
+                    "Chưa có câu trả lời AI để xuất ZIP.",
+                    "No AI answer to export.",
+                    "Нет ответа ИИ для экспорта."
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val blocks = Regex(
+            "```([^\\n`]*)\\n([\\s\\S]*?)```"
+        ).findAll(answer).toList()
+
+        if (blocks.isEmpty()) {
+            Toast.makeText(
+                this,
+                tr(
+                    "Không tìm thấy khối code trong câu trả lời.",
+                    "No code blocks found in the answer.",
+                    "В ответе не найдены блоки кода."
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val files = mutableListOf<Pair<String, String>>()
+
+        blocks.forEachIndexed { index, match ->
+            val header = match.groupValues[1].trim()
+
+            val filename = Regex(
+                """filename:\s*([^\s]+)""",
+                RegexOption.IGNORE_CASE
+            ).find(header)?.groupValues?.get(1)
+
+            val extension = when {
+                header.contains("kotlin", true) -> "kt"
+                header.contains("java", true) -> "java"
+                header.contains("xml", true) -> "xml"
+                header.contains("json", true) -> "json"
+                header.contains("python", true) || header == "py" -> "py"
+                header.contains("javascript", true) || header == "js" -> "js"
+                header.contains("html", true) -> "html"
+                header.contains("css", true) -> "css"
+                header.contains("gradle", true) -> "gradle.kts"
+                else -> "txt"
+            }
+
+            val name = filename ?: "source_${index + 1}.$extension"
+            files.add(name to match.groupValues[2].trimEnd('\n', '\r'))
+        }
+
+        pendingZipFiles = files
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_TITLE, "DarkGPT-source.zip")
+        }
+
+        startActivityForResult(intent, 502)
+    }
+
+    private fun writeZip(uri: Uri) {
+        try {
+            val output = contentResolver.openOutputStream(uri)
+                ?: throw Exception("Không mở được tệp đích")
+
+            output.use { stream ->
+                ZipOutputStream(stream).use { zip ->
+                    pendingZipFiles.forEach { (filename, content) ->
+                        val safeName = filename
+                            .replace("\\", "_")
+                            .replace("/", "_")
+                            .replace("..", "_")
+
+                        zip.putNextEntry(ZipEntry(safeName))
+                        zip.write(content.toByteArray(Charsets.UTF_8))
+                        zip.closeEntry()
+                    }
+                }
+            }
+
+            Toast.makeText(
+                this,
+                tr(
+                    "Đã tạo ZIP mã nguồn.",
+                    "Source ZIP created.",
+                    "ZIP с исходным кодом создан."
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Lỗi tạo ZIP: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        } finally {
+            pendingZipFiles = emptyList()
         }
     }
 }
