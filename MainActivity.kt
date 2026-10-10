@@ -2,6 +2,7 @@ package com.darkgpt.app
 
 import android.app.Activity
 import android.os.Bundle
+import android.os.Build
 import android.graphics.Color
 import android.graphics.Typeface
 import android.content.Context
@@ -9,8 +10,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.EditorInfo
+import android.text.InputType
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -28,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var status: TextView
     private lateinit var chatScroll: ScrollView
+    private lateinit var rootLayout: LinearLayout
 
     private var history = JSONArray()
 
@@ -49,7 +55,7 @@ class MainActivity : Activity() {
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         )
 
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(true)
         }
 
@@ -80,6 +86,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             setBackgroundColor(accent)
             minHeight = dp(48)
+            isAllCaps = false
             setOnClickListener { onTap() }
         }
     }
@@ -89,7 +96,7 @@ class MainActivity : Activity() {
             getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
         clipboard.setPrimaryClip(
-            ClipData.newPlainText("DarkGPT code", value)
+            ClipData.newPlainText("DarkGPT", value)
         )
 
         Toast.makeText(
@@ -99,15 +106,51 @@ class MainActivity : Activity() {
         ).show()
     }
 
-    private fun showChat() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(bg)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            fitsSystemWindows = true
+    private fun installInsets(root: View) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(
+                    WindowInsets.Type.statusBars() or
+                        WindowInsets.Type.navigationBars()
+                )
+
+                view.setPadding(
+                    dp(14),
+                    dp(8) + bars.top,
+                    dp(14),
+                    dp(8) + bars.bottom
+                )
+
+                insets
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val top = insets.systemWindowInsetTop
+                val bottom = insets.systemWindowInsetBottom
+
+                view.setPadding(
+                    dp(14),
+                    dp(8) + top,
+                    dp(14),
+                    dp(8) + bottom
+                )
+
+                insets
+            }
         }
 
-        // Hàng tiêu đề
+        root.requestApplyInsets()
+    }
+
+    private fun showChat() {
+        rootLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            clipToPadding = false
+        }
+
+        // Tiêu đề ứng dụng
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -118,24 +161,22 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, -2, 1f)
         )
 
-        root.addView(header)
+        rootLayout.addView(header)
 
-        // Cài đặt nằm ở hàng riêng, không còn sát góc trên
+        // Cài đặt nằm dưới tiêu đề, không nằm ở góc trên
         val settingsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(8))
+            setPadding(0, dp(6), 0, dp(8))
         }
 
-        settingsRow.addView(
-            button("⚙ Cài đặt") {
-                showSettings()
-            }
-        )
+        settingsRow.addView(button("⚙ Cài đặt") {
+            showSettings()
+        })
 
-        root.addView(settingsRow)
+        rootLayout.addView(settingsRow)
 
-        root.addView(
+        rootLayout.addView(
             makeText(
                 "Trợ lý lập trình game • Mod hợp pháp • Tạo mã nguồn",
                 12f,
@@ -152,8 +193,10 @@ class MainActivity : Activity() {
         }
 
         chatScroll = ScrollView(this).apply {
-            isFillViewport = true
+            isFillViewport = false
             isVerticalScrollBarEnabled = true
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+
             addView(
                 messages,
                 ScrollView.LayoutParams(
@@ -163,7 +206,7 @@ class MainActivity : Activity() {
             )
         }
 
-        root.addView(
+        rootLayout.addView(
             chatScroll,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -175,9 +218,10 @@ class MainActivity : Activity() {
         status = makeText("Chưa gửi yêu cầu", 12f, muted).apply {
             setPadding(0, dp(6), 0, dp(6))
         }
-        root.addView(status)
 
-        // Hàng nhập tin nhắn luôn nằm cuối màn hình
+        rootLayout.addView(status)
+
+        // Ô nhập liệu nằm cuối giao diện
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
@@ -192,8 +236,13 @@ class MainActivity : Activity() {
             setBackgroundColor(panel)
             minLines = 1
             maxLines = 4
-            gravity = Gravity.TOP
+            gravity = Gravity.TOP or Gravity.START
             isVerticalScrollBarEnabled = true
+
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE
+
+            imeOptions = EditorInfo.IME_ACTION_SEND
         }
 
         inputRow.addView(
@@ -201,13 +250,14 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, -2, 1f)
         )
 
-        inputRow.addView(
-            button("Gửi") { sendMessage() }
-        )
+        inputRow.addView(button("Gửi") {
+            sendMessage()
+        })
 
-        root.addView(inputRow)
+        rootLayout.addView(inputRow)
 
-        setContentView(root)
+        setContentView(rootLayout)
+        installInsets(rootLayout)
 
         addMessage(
             "DarkGPT",
@@ -216,12 +266,20 @@ class MainActivity : Activity() {
                 "Mở Cài đặt để cấu hình dịch vụ AI trước khi gửi."
         )
 
-        // Khi bàn phím mở, đưa vùng chat tới tin nhắn cuối.
         input.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 chatScroll.post {
                     chatScroll.fullScroll(View.FOCUS_DOWN)
                 }
+            }
+        }
+
+        input.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                sendMessage()
+                true
+            } else {
+                false
             }
         }
     }
@@ -268,10 +326,11 @@ class MainActivity : Activity() {
                 setBackgroundColor(panel)
                 setText(prefs.getString(keyName, "") ?: "")
 
-                if (secret) {
-                    inputType =
-                        android.text.InputType.TYPE_CLASS_TEXT or
-                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                inputType = if (secret) {
+                    InputType.TYPE_CLASS_TEXT or
+                        InputType.TYPE_TEXT_VARIATION_PASSWORD
+                } else {
+                    InputType.TYPE_CLASS_TEXT
                 }
             }
         }
@@ -307,7 +366,10 @@ class MainActivity : Activity() {
 
         layout.addView(button("Lưu và quay lại") {
             prefs.edit()
-                .putString("base", base.text.toString().trim().trimEnd('/'))
+                .putString(
+                    "base",
+                    base.text.toString().trim().trimEnd('/')
+                )
                 .putString("key", key.text.toString().trim())
                 .putString("model", model.text.toString().trim())
                 .apply()
@@ -326,6 +388,7 @@ class MainActivity : Activity() {
         })
 
         val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
             addView(layout)
             fitsSystemWindows = true
         }
@@ -347,13 +410,17 @@ class MainActivity : Activity() {
                 "Hãy nhập API Base URL, API Key và Model trong Cài đặt.",
                 Toast.LENGTH_LONG
             ).show()
+
             showSettings()
             return
         }
 
         addMessage("Bạn", prompt)
+
         history.put(
-            JSONObject().put("role", "user").put("content", prompt)
+            JSONObject()
+                .put("role", "user")
+                .put("content", prompt)
         )
 
         input.setText("")
@@ -372,12 +439,21 @@ class MainActivity : Activity() {
                 val connection =
                     (URL(base.trimEnd('/') + "/chat/completions")
                         .openConnection() as HttpURLConnection).apply {
+
                         requestMethod = "POST"
                         connectTimeout = 20000
                         readTimeout = 90000
                         doOutput = true
-                        setRequestProperty("Content-Type", "application/json")
-                        setRequestProperty("Authorization", "Bearer $apiKey")
+
+                        setRequestProperty(
+                            "Content-Type",
+                            "application/json"
+                        )
+
+                        setRequestProperty(
+                            "Authorization",
+                            "Bearer $apiKey"
+                        )
                     }
 
                 val messagesToSend = JSONArray().put(
@@ -396,7 +472,9 @@ class MainActivity : Activity() {
                 )
 
                 for (i in 0 until sendHistory.length()) {
-                    messagesToSend.put(sendHistory.getJSONObject(i))
+                    messagesToSend.put(
+                        sendHistory.getJSONObject(i)
+                    )
                 }
 
                 val body = JSONObject()
@@ -405,33 +483,45 @@ class MainActivity : Activity() {
                     .put("temperature", 0.4)
 
                 connection.outputStream.use {
-                    it.write(body.toString().toByteArray(Charsets.UTF_8))
+                    it.write(
+                        body.toString().toByteArray(Charsets.UTF_8)
+                    )
                 }
 
                 val responseCode = connection.responseCode
+
                 val stream = if (responseCode in 200..299) {
                     connection.inputStream
                 } else {
                     connection.errorStream
                 }
 
-                val raw = stream.bufferedReader().use { it.readText() }
+                val raw = stream?.bufferedReader()?.use {
+                    it.readText()
+                } ?: "Không nhận được nội dung phản hồi."
 
                 if (responseCode !in 200..299) {
-                    throw Exception("HTTP $responseCode: " + raw.take(600))
+                    throw Exception(
+                        "HTTP $responseCode: " + raw.take(600)
+                    )
                 }
 
                 answer = JSONObject(raw)
                     .getJSONArray("choices")
                     .getJSONObject(0)
                     .getJSONObject("message")
-                    .optString("content", "AI không trả về nội dung.")
+                    .optString(
+                        "content",
+                        "AI không trả về nội dung."
+                    )
 
                 history.put(
                     JSONObject()
                         .put("role", "assistant")
                         .put("content", answer)
                 )
+
+                connection.disconnect()
             } catch (e: Exception) {
                 answer =
                     "Lỗi kết nối AI: ${e.message ?: "không rõ nguyên nhân"}\n\n" +
@@ -441,6 +531,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 addMessage("DarkGPT", answer)
                 status.text = "Hoàn tất"
+
                 chatScroll.post {
                     chatScroll.fullScroll(View.FOCUS_DOWN)
                 }
@@ -454,6 +545,7 @@ class MainActivity : Activity() {
             isLongClickable = true
             setPadding(0, 0, 0, dp(8))
         }
+
         messages.addView(textView)
     }
 
@@ -464,6 +556,7 @@ class MainActivity : Activity() {
             }
         )
 
+        // Nhận dạng khối Markdown, có hoặc không có tên ngôn ngữ.
         val pattern = Regex("```([^\\n`]*)\\n([\\s\\S]*?)```")
         val blocks = pattern.findAll(content).toList()
 
@@ -473,7 +566,10 @@ class MainActivity : Activity() {
             var cursor = 0
 
             for (block in blocks) {
-                val before = content.substring(cursor, block.range.first)
+                val before = content.substring(
+                    cursor,
+                    block.range.first
+                )
 
                 if (before.isNotBlank()) {
                     addSelectableText(before.trim())
@@ -511,29 +607,26 @@ class MainActivity : Activity() {
 
                 card.addView(codeHeader)
 
-                // EditText chỉ đọc: cho phép chọn đoạn văn bản bằng cách nhấn giữ.
-                val codeEditor = EditText(this).apply {
-                    setText(code)
+                // TextView cho phép chọn từng đoạn bằng thao tác nhấn giữ.
+                val codeView = TextView(this).apply {
+                    text = code
                     textSize = 13f
                     setTextColor(textColor)
                     typeface = Typeface.MONOSPACE
                     setBackgroundColor(Color.TRANSPARENT)
                     setPadding(0, dp(10), 0, dp(8))
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    isClickable = true
-                    isLongClickable = true
-                    keyListener = null
                     setTextIsSelectable(true)
-                    setSelection(0)
-                    minLines = 1
-                    maxLines = 30
+                    isLongClickable = true
+                    isFocusable = true
                     gravity = Gravity.TOP or Gravity.START
                 }
 
                 card.addView(
-                    codeEditor,
-                    LinearLayout.LayoutParams(-1, -2)
+                    codeView,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
                 )
 
                 messages.addView(
@@ -547,14 +640,17 @@ class MainActivity : Activity() {
             }
 
             val remaining = content.substring(cursor)
+
             if (remaining.isNotBlank()) {
                 addSelectableText(remaining.trim())
             }
         }
 
-        messages.addView(button("📋 Sao chép toàn bộ câu trả lời") {
-            copyText(content)
-        })
+        messages.addView(
+            button("📋 Sao chép toàn bộ câu trả lời") {
+                copyText(content)
+            }
+        )
 
         messages.addView(
             View(this).apply {
