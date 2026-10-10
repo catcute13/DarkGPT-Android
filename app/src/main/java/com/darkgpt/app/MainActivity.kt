@@ -1221,10 +1221,20 @@ class MainActivity : Activity() {
         ) return
 
         val lowerTyped = typed.lowercase(Locale.ROOT)
+        
+        // Kiểm tra xem người dùng có yêu cầu xuất file rõ ràng hay không
+        val hasIntentToExport = lowerTyped.contains("lưu") || 
+            lowerTyped.contains("xuất") || 
+            lowerTyped.contains("tạo file") || 
+            lowerTyped.contains("tạo gói") || 
+            lowerTyped.contains("tạo addon") ||
+            lowerTyped.contains("export") ||
+            lowerTyped.contains("save")
+
         pendingExportType = when {
-            lowerTyped.contains(".mcpack") || lowerTyped.contains("mcpack") -> ExportType.MCPACK
-            lowerTyped.contains(".zip") || lowerTyped.contains("zip code") || lowerTyped.contains("xuất zip") || lowerTyped.contains("tạo zip") -> ExportType.ZIP
-            lowerTyped.contains(".txt") || lowerTyped.contains("lưu vào file txt") || lowerTyped.contains("tạo file txt") -> ExportType.TXT
+            hasIntentToExport && (lowerTyped.contains(".mcpack") || lowerTyped.contains("mcpack")) -> ExportType.MCPACK
+            hasIntentToExport && (lowerTyped.contains(".zip") || lowerTyped.contains("zip")) -> ExportType.ZIP
+            hasIntentToExport && (lowerTyped.contains(".txt") || lowerTyped.contains("txt")) -> ExportType.TXT
             else -> ExportType.NONE
         }
 
@@ -1540,9 +1550,7 @@ class MainActivity : Activity() {
     }
 
     private fun extractCodeBlocks(answer: String): List<Pair<String, String>> {
-        val blocks = Regex(
-            "        ).findAll(answer).toList()
-
+        val blocks = Regex("
         val files = mutableListOf<Pair<String, String>>()
         val usedNames = mutableSetOf<String>()
 
