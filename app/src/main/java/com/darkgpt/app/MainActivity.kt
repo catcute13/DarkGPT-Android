@@ -1,4 +1,3 @@
-
 package com.darkgpt.app
 
 import android.app.Activity
@@ -931,7 +930,10 @@ class MainActivity : Activity() {
 
         saveChats()
         renderCurrentChat()
-        prompt.setText()
+
+        // FIX: setText() bắt buộc phải có tham số.
+        prompt.setText("")
+
         hideKeyboard()
 
         sending = true
